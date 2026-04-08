@@ -168,13 +168,44 @@ $ErrorActionPreference = 'Stop'
                         <TextBlock Text="One machine name per line:" FontSize="11"
                                    Margin="0,2,0,4" Foreground="#6868A0"/>
                         <TextBox x:Name="TxtMachines"
-                                 Height="160"
+                                 Height="130"
                                  AcceptsReturn="True"
                                  VerticalScrollBarVisibility="Auto"
                                  HorizontalScrollBarVisibility="Auto"
                                  TextWrapping="NoWrap"
                                  FontFamily="Consolas" FontSize="12"
                                  VerticalContentAlignment="Top"/>
+
+                        <!-- Schedule toggle -->
+                        <CheckBox x:Name="ChkSchedule"
+                                  Content="Schedule for later"
+                                  Foreground="#A0A0D0"
+                                  Margin="2,8,0,0"/>
+
+                        <!-- Schedule date/time panel (hidden until toggle is checked) -->
+                        <StackPanel x:Name="SchedulePanel" Visibility="Collapsed" Margin="2,6,0,0">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="6"/>
+                                    <ColumnDefinition Width="68"/>
+                                </Grid.ColumnDefinitions>
+                                <DatePicker x:Name="DpScheduleDate"
+                                            Grid.Column="0" Height="26"
+                                            Background="#1E1E35" Foreground="#D0D0F0"
+                                            BorderBrush="#404068"
+                                            FontSize="12"/>
+                                <TextBox x:Name="TxtScheduleTime"
+                                         Grid.Column="2" Height="26"
+                                         Text="08:00"
+                                         FontFamily="Consolas" FontSize="12"
+                                         ToolTip="24-hour time  HH:mm"/>
+                            </Grid>
+                            <TextBlock Text="App must stay open for scheduled builds."
+                                       FontSize="10" Foreground="#505070"
+                                       Margin="0,3,0,0" TextWrapping="Wrap"/>
+                        </StackPanel>
+
                         <Button x:Name="BtnStartRebuild"
                                 Content=">  Start Rebuild"
                                 Height="36" Margin="0,8,0,0"
@@ -275,7 +306,19 @@ $ErrorActionPreference = 'Stop'
                         <!-- Status -->
                         <DataGridTextColumn Header="Status"
                                             Binding="{Binding Status}"
-                                            Width="115"/>
+                                            Width="110"/>
+
+                        <!-- Scheduled For -->
+                        <DataGridTextColumn Header="Scheduled"
+                                            Binding="{Binding ScheduleLabel}"
+                                            Width="88">
+                            <DataGridTextColumn.ElementStyle>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="FontFamily" Value="Consolas"/>
+                                    <Setter Property="FontSize"   Value="11"/>
+                                </Style>
+                            </DataGridTextColumn.ElementStyle>
+                        </DataGridTextColumn>
 
                         <!-- Build Stage -->
                         <DataGridTextColumn Header="Build Stage"
@@ -417,9 +460,11 @@ function Get-BMRowBrush {
                               [System.Windows.Media.Color]::FromArgb(180,40,40,50)) }
         'Error'     { return New-Object System.Windows.Media.SolidColorBrush(
                               [System.Windows.Media.Color]::FromArgb(200,80,40,0))  }
-        'Monitoring'{ return New-Object System.Windows.Media.SolidColorBrush(
-                              [System.Windows.Media.Color]::FromArgb(100,10,30,80)) }
-        default     { return [System.Windows.Media.Brushes]::Transparent }
+        'Monitoring' { return New-Object System.Windows.Media.SolidColorBrush(
+                               [System.Windows.Media.Color]::FromArgb(100,10,30,80)) }
+        'Scheduled'  { return New-Object System.Windows.Media.SolidColorBrush(
+                               [System.Windows.Media.Color]::FromArgb(120,20,50,80)) }
+        default      { return [System.Windows.Media.Brushes]::Transparent }
     }
 }
 
@@ -453,6 +498,7 @@ function Start-BMGui {
         'RegCredLabel','PrivCredLabel','CredsSummary',
         'BtnSetRegCred','BtnSetPrivCred',
         'TxtMachines','BtnStartRebuild','BtnClearCompleted',
+        'ChkSchedule','SchedulePanel','DpScheduleDate','TxtScheduleTime',
         'TxtStagingWait','TxtPollInterval','TxtMaxRetries','BtnApplySettings',
         'JobGrid',
         'TxtLog','LogScroller','BtnClearLog',
@@ -574,7 +620,33 @@ function Start-BMGui {
     })
 
     # -------------------------------------------------------------------------
-    #  START REBUILD BUTTON
+    #  SCHEDULE TOGGLE  (show/hide date+time picker, relabel Start button)
+    # -------------------------------------------------------------------------
+
+    $ctrl['ChkSchedule'].Add_Checked({
+        $ctrl['SchedulePanel'].Visibility    = [System.Windows.Visibility]::Visible
+        $ctrl['BtnStartRebuild'].Content     = '>  Schedule Rebuild'
+        $ctrl['BtnStartRebuild'].Background  = New-Object System.Windows.Media.SolidColorBrush(
+            [System.Windows.Media.ColorConverter]::ConvertFromString('#1A3A6E'))
+        $ctrl['BtnStartRebuild'].BorderBrush = New-Object System.Windows.Media.SolidColorBrush(
+            [System.Windows.Media.ColorConverter]::ConvertFromString('#2E5FAE'))
+        # Default the date picker to today if nothing is selected
+        if ($null -eq $ctrl['DpScheduleDate'].SelectedDate) {
+            $ctrl['DpScheduleDate'].SelectedDate = [datetime]::Today
+        }
+    })
+
+    $ctrl['ChkSchedule'].Add_Unchecked({
+        $ctrl['SchedulePanel'].Visibility    = [System.Windows.Visibility]::Collapsed
+        $ctrl['BtnStartRebuild'].Content     = '>  Start Rebuild'
+        $ctrl['BtnStartRebuild'].Background  = New-Object System.Windows.Media.SolidColorBrush(
+            [System.Windows.Media.ColorConverter]::ConvertFromString('#1B5E20'))
+        $ctrl['BtnStartRebuild'].BorderBrush = New-Object System.Windows.Media.SolidColorBrush(
+            [System.Windows.Media.ColorConverter]::ConvertFromString('#388E3C'))
+    })
+
+    # -------------------------------------------------------------------------
+    #  START / SCHEDULE REBUILD BUTTON
     # -------------------------------------------------------------------------
 
     $ctrl['BtnStartRebuild'].Add_Click({
@@ -604,6 +676,45 @@ function Start-BMGui {
             return
         }
 
+        # -- Resolve scheduled time if toggle is checked ----------------------
+        $scheduleFor = $null
+        if ($ctrl['ChkSchedule'].IsChecked -eq $true) {
+            $selectedDate = $ctrl['DpScheduleDate'].SelectedDate
+            $timeText     = $ctrl['TxtScheduleTime'].Text.Trim()
+
+            if ($null -eq $selectedDate) {
+                [System.Windows.MessageBox]::Show(
+                    'Please select a date for the scheduled rebuild.',
+                    'Date Required',
+                    [System.Windows.MessageBoxButton]::OK,
+                    [System.Windows.MessageBoxImage]::Warning) | Out-Null
+                return
+            }
+
+            $parsedTime = $null
+            if (-not [datetime]::TryParseExact($timeText, 'HH:mm',
+                    [System.Globalization.CultureInfo]::InvariantCulture,
+                    [System.Globalization.DateTimeStyles]::None, [ref]$parsedTime)) {
+                [System.Windows.MessageBox]::Show(
+                    "Invalid time format: '$timeText'`nUse 24-hour format HH:mm (e.g. 14:30).",
+                    'Invalid Time',
+                    [System.Windows.MessageBoxButton]::OK,
+                    [System.Windows.MessageBoxImage]::Warning) | Out-Null
+                return
+            }
+
+            $scheduleFor = $selectedDate.Date.Add($parsedTime.TimeOfDay)
+
+            if ($scheduleFor -le [datetime]::Now) {
+                [System.Windows.MessageBox]::Show(
+                    ("Scheduled time {0} is in the past.`nPlease choose a future date/time." -f $scheduleFor.ToString('MM/dd/yyyy HH:mm')),
+                    'Time in Past',
+                    [System.Windows.MessageBoxButton]::OK,
+                    [System.Windows.MessageBoxImage]::Warning) | Out-Null
+                return
+            }
+        }
+
         # Apply settings
         $stagingWait  = 35
         $pollInterval = 30
@@ -613,16 +724,21 @@ function Start-BMGui {
 
         # Add jobs
         foreach ($m in $machines) {
-            Add-BMJob -MachineName $m | Out-Null
+            Add-BMJob -MachineName $m -ScheduledFor $scheduleFor | Out-Null
         }
 
-        # Start engine if not running
+        # Start engine if not running (engine must run to watch for scheduled times)
         if (-not (Test-BMEngineRunning)) {
             Start-BMEngine
         }
 
         $ctrl['TxtMachines'].Clear()
-        Write-BMLog -Message ("Queued {0} machine(s) for rebuild" -f $machines.Count) -Level Info
+
+        if ($null -ne $scheduleFor) {
+            Write-BMLog -Message ("Scheduled {0} machine(s) for {1}" -f $machines.Count, $scheduleFor.ToString('MM/dd/yyyy HH:mm')) -Level Info
+        } else {
+            Write-BMLog -Message ("Queued {0} machine(s) for immediate rebuild" -f $machines.Count) -Level Info
+        }
     })
 
     # -------------------------------------------------------------------------
@@ -672,17 +788,20 @@ function Start-BMGui {
         try { $ctrl['JobGrid'].Items.Refresh() } catch { }
 
         # Status bar - job summary
-        $jobs     = @(Get-BMJobs)
-        $total    = $jobs.Count
-        $active   = @($jobs | Where-Object { $_.Status -notin @('Completed','Failed','Cancelled') }).Count
-        $done     = @($jobs | Where-Object { $_.Status -eq 'Completed' }).Count
-        $failed   = @($jobs | Where-Object { $_.Status -eq 'Failed'    }).Count
+        $jobs      = @(Get-BMJobs)
+        $total     = $jobs.Count
+        $scheduled = @($jobs | Where-Object { $_.Status -eq 'Scheduled'  }).Count
+        $active    = @($jobs | Where-Object { $_.Status -notin @('Completed','Failed','Cancelled','Scheduled') }).Count
+        $done      = @($jobs | Where-Object { $_.Status -eq 'Completed'  }).Count
+        $failed    = @($jobs | Where-Object { $_.Status -eq 'Failed'     }).Count
 
         $engineState = if (Test-BMEngineRunning) { '* Engine running' } else { 'o Engine idle' }
         $ctrl['EngineStatusLabel'].Text = $engineState
 
         $ctrl['StatusBarLeft'].Text = if ($total -gt 0) {
-            "Jobs: $total total  |  $active active  |  $done completed  |  $failed failed"
+            $sb = "Jobs: $total total  |  $active active  |  $done completed  |  $failed failed"
+            if ($scheduled -gt 0) { $sb += "  |  $scheduled scheduled" }
+            $sb
         } else {
             'No jobs queued. Enter machine names and click Start Rebuild.'
         }
@@ -708,8 +827,13 @@ function Start-BMGui {
             $_.Status -notin @('Completed','Failed','Cancelled')
         })
         if ($activeJobs.Count -gt 0) {
+            $runningCount   = @($activeJobs | Where-Object { $_.Status -ne 'Scheduled' }).Count
+            $scheduledCount = @($activeJobs | Where-Object { $_.Status -eq 'Scheduled' }).Count
+            $detail = ''
+            if ($runningCount   -gt 0) { $detail += "$runningCount active"    }
+            if ($scheduledCount -gt 0) { $detail += "  $scheduledCount scheduled" }
             $result = [System.Windows.MessageBox]::Show(
-                "$($activeJobs.Count) active job(s) still running.`nClose anyway? This will NOT stop the rebuilds already in progress on the machines.",
+                "$($activeJobs.Count) job(s) still pending ($($detail.Trim())).`nClose anyway? Active rebuilds already sent to machines will continue; scheduled jobs will be lost.",
                 'Active Jobs',
                 [System.Windows.MessageBoxButton]::YesNo,
                 [System.Windows.MessageBoxImage]::Warning)

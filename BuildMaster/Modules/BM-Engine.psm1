@@ -8,6 +8,8 @@
     and advancing each job's state.
 
     STATE MACHINE:
+        Scheduled   (optional entry point when a future run time is set)
+          +-> [scheduled time reached] -> Pending
         Pending
           +-> Staging         (Invoke-BMStage API call issued)
                 +-> StagingWait   (success; waiting 30-45 min)
@@ -126,6 +128,9 @@ function New-BMJobObject {
         IsVM            = $null          # $null=unknown, $true=VM/DiDC, $false=Physical
         RetryCount      = 0
         CancelRequested = $false
+        # -- Schedule ------------------------------------------------------
+        ScheduledFor    = $null          # [datetime] or $null = run immediately
+        ScheduleLabel   = 'Now'          # Display string shown in grid column
         # -- Display -------------------------------------------------------
         Message         = 'Queued - waiting for credentials & start signal'
         StatusIcon      = [char]0x23F3   # [wait]
@@ -142,7 +147,10 @@ function New-BMJobObject {
 function Add-BMJob {
     [CmdletBinding()]
     [OutputType([object])]
-    param([Parameter(Mandatory)][string]$MachineName)
+    param(
+        [Parameter(Mandatory)][string]$MachineName,
+        [nullable[datetime]]$ScheduledFor = $null
+    )
 
     $name = $MachineName.Trim().ToUpper()
     $existing = $script:Jobs | Where-Object { $_.MachineName -eq $name }
@@ -151,8 +159,20 @@ function Add-BMJob {
         return $existing
     }
     $job = New-BMJobObject -MachineName $name
+
+    # If a future time is specified, park the job in Scheduled state
+    if ($null -ne $ScheduledFor -and $ScheduledFor -gt [datetime]::Now) {
+        $job.ScheduledFor  = $ScheduledFor
+        $job.Status        = 'Scheduled'
+        $job.ScheduleLabel = $ScheduledFor.ToString('MM/dd HH:mm')
+        $job.StatusIcon    = [char]0x23F0   # [alarm]
+        $job.Message       = "Scheduled for $($ScheduledFor.ToString('MM/dd/yyyy HH:mm'))"
+        Write-BMLog -MachineName $name -Message ("Job scheduled for {0}" -f $ScheduledFor.ToString('MM/dd/yyyy HH:mm')) -Level Info
+    } else {
+        Write-BMLog -MachineName $name -Message 'Job created and queued' -Level Info
+    }
+
     $script:Jobs.Add($job)
-    Write-BMLog -MachineName $name -Message 'Job created and queued' -Level Info
     return $job
 }
 
@@ -251,7 +271,7 @@ function Test-BMEngineRunning {
 # -----------------------------------------------------------------------------
 
 function Invoke-BMEngineTick {
-    $activeStatuses = @('Pending','Staging','StagingWait','Rebooting','Monitoring','Error')
+    $activeStatuses = @('Pending','Staging','StagingWait','Rebooting','Monitoring','Error','Scheduled')
 
     $activeJobs = @($script:Jobs | Where-Object {
         $_.Status -in $activeStatuses -and -not $_.CancelRequested
@@ -298,11 +318,12 @@ function Invoke-BMJobStep {
     param([Parameter(Mandatory)][object]$Job)
 
     switch ($Job.Status) {
-        'Pending'     { Invoke-BMStep_Stage      -Job $Job }
+        'Scheduled'   { Invoke-BMStep_Scheduled   -Job $Job }
+        'Pending'     { Invoke-BMStep_Stage        -Job $Job }
         'Staging'     { <# fire-and-forget; next tick checks result - no-op here #> }
-        'StagingWait' { Invoke-BMStep_StagingWait -Job $Job }
-        'Rebooting'   { Invoke-BMStep_Reboot      -Job $Job }
-        'Monitoring'  { Invoke-BMStep_Monitor      -Job $Job }
+        'StagingWait' { Invoke-BMStep_StagingWait  -Job $Job }
+        'Rebooting'   { Invoke-BMStep_Reboot        -Job $Job }
+        'Monitoring'  { Invoke-BMStep_Monitor        -Job $Job }
         'Error'       {
             # Auto-retry after error unless max retries exceeded
             if ($Job.RetryCount -lt $script:MaxRetries) {
@@ -312,6 +333,33 @@ function Invoke-BMJobStep {
                 Invoke-BMResetForRetry -Job $Job
             }
         }
+    }
+}
+
+# -- Step: Scheduled -----------------------------------------------------------
+function Invoke-BMStep_Scheduled {
+    param([object]$Job)
+
+    if ($null -eq $Job.ScheduledFor) {
+        # No time set - just release immediately
+        $Job.Status        = 'Pending'
+        $Job.ScheduleLabel = 'Now'
+        return
+    }
+
+    $remaining = $Job.ScheduledFor - [datetime]::Now
+
+    if ($remaining.TotalSeconds -le 0) {
+        $Job.Status        = 'Pending'
+        $Job.ScheduleLabel = 'Now'
+        $Job.StatusIcon    = [char]0x23F3   # [wait]
+        $Job.Message       = 'Scheduled time reached - starting rebuild...'
+        Write-BMLog -MachineName $Job.MachineName -Message 'Scheduled time reached - transitioning to Pending' -Level Info
+    } else {
+        $h = [math]::Floor($remaining.TotalHours)
+        $m = $remaining.Minutes
+        $s = $remaining.Seconds
+        $Job.Message = 'Scheduled - starts in {0:D2}:{1:D2}:{2:D2}' -f $h, $m, $s
     }
 }
 
