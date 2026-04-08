@@ -52,7 +52,6 @@ $ErrorActionPreference = 'Stop'
             <Setter Property="BorderBrush"     Value="#404068"/>
             <Setter Property="BorderThickness" Value="1"/>
             <Setter Property="Padding"         Value="5,3"/>
-            <Setter Property="CaretBrush"      Value="White"/>
         </Style>
         <Style TargetType="GroupBox">
             <Setter Property="Foreground"      Value="#A0A0D0"/>
@@ -147,7 +146,7 @@ $ErrorActionPreference = 'Stop'
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- --------------  LEFT PANEL  -------------- -->
+            <!-- ==================  LEFT PANEL  ================== -->
             <StackPanel Grid.Column="0" Margin="0,0,10,0">
 
                 <!-- Credentials -->
@@ -255,7 +254,7 @@ $ErrorActionPreference = 'Stop'
                 </GroupBox>
             </StackPanel>
 
-            <!-- --------------  RIGHT PANEL  -------------- -->
+            <!-- ==================  RIGHT PANEL  ================= -->
             <Grid Grid.Column="1">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="*"/>
@@ -372,7 +371,6 @@ $ErrorActionPreference = 'Stop'
                                 <DataTemplate>
                                     <Button Content="Cancel"
                                             Tag="{Binding MachineName}"
-                                            x:Name="BtnCancelJob"
                                             Height="22" Width="62"
                                             FontSize="11"
                                             Background="#5C1A1A"
@@ -545,7 +543,9 @@ function Start-BMGui {
         $el = $e.OriginalSource
         $maxDepth = 10
         while ($null -ne $el -and $maxDepth-- -gt 0) {
-            if ($el -is [System.Windows.Controls.Button] -and $el.Name -eq 'BtnCancelJob') {
+            if ($el -is [System.Windows.Controls.Button] -and
+                $el.Content -eq 'Cancel' -and
+                -not [string]::IsNullOrWhiteSpace($el.Tag)) {
                 $machineName = $el.Tag
                 if (![string]::IsNullOrWhiteSpace($machineName)) {
                     $result = [System.Windows.MessageBox]::Show(
