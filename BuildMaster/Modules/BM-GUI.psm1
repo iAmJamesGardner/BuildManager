@@ -805,7 +805,7 @@ function Start-BMGui {
         } else {
             'No jobs queued. Enter machine names and click Start Rebuild.'
         }
-        $ctrl['StatusBarRight'].Text = "Environment: $Environment  |  {0}" -f (Get-Date -Format 'HH:mm:ss')
+        $ctrl['StatusBarRight'].Text = ("Environment: $Environment  |  {0}" -f (Get-Date -Format 'HH:mm:ss'))
     })
 
     # -------------------------------------------------------------------------

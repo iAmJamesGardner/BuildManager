@@ -108,7 +108,7 @@ function Get-BMBuildData {
         [Parameter(Mandatory)][string]$ComputerName,
         [System.Management.Automation.PSCredential]$Credential
     )
-    $uri = '{0}/build?computer={1}' -f $script:BMBaseUrl, [Uri]::EscapeDataString($ComputerName)
+    $uri = ('{0}/build?computer={1}' -f $script:BMBaseUrl, [Uri]::EscapeDataString($ComputerName))
     return Invoke-BMRestCall -Uri $uri -Method GET -Credential $Credential
 }
 
@@ -123,7 +123,7 @@ function Get-BMLastBuildInstance {
         [Parameter(Mandatory)][string]$ComputerName,
         [System.Management.Automation.PSCredential]$Credential
     )
-    $uri = '{0}/build/instance/last?computer={1}' -f $script:BMBaseUrl, [Uri]::EscapeDataString($ComputerName)
+    $uri = ('{0}/build/instance/last?computer={1}' -f $script:BMBaseUrl, [Uri]::EscapeDataString($ComputerName))
     return Invoke-BMRestCall -Uri $uri -Method GET -Credential $Credential
 }
 
@@ -136,7 +136,7 @@ function Invoke-BMStage {
         [Parameter(Mandatory)][string]$ComputerName,
         [System.Management.Automation.PSCredential]$Credential
     )
-    $uri  = '{0}/stage' -f $script:BMBaseUrl
+    $uri  = ('{0}/stage' -f $script:BMBaseUrl)
     $body = @{ ComputerName = $ComputerName }
     return Invoke-BMRestCall -Uri $uri -Method POST -Body $body -Credential $Credential
 }
@@ -220,7 +220,7 @@ function Get-VWDesktop {
         [System.Management.Automation.PSCredential]$Credential
     )
     try {
-        $uri = '{0}/{1}' -f $script:VWBaseUrl, [Uri]::EscapeDataString($ComputerName)
+        $uri = ('{0}/{1}' -f $script:VWBaseUrl, [Uri]::EscapeDataString($ComputerName))
         return Invoke-BMRestCall -Uri $uri -Method GET -Credential $Credential
     }
     catch {
@@ -238,7 +238,7 @@ function Invoke-VWReboot {
         [Parameter(Mandatory)][string]$ComputerName,
         [System.Management.Automation.PSCredential]$Credential
     )
-    $uri = '{0}/{1}/reboot' -f $script:VWBaseUrl, [Uri]::EscapeDataString($ComputerName)
+    $uri = ('{0}/{1}/reboot' -f $script:VWBaseUrl, [Uri]::EscapeDataString($ComputerName))
     return Invoke-BMRestCall -Uri $uri -Method POST -Credential $Credential
 }
 

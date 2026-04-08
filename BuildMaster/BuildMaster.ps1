@@ -35,8 +35,8 @@ $script:BMEnvironment = Split-Path -Leaf $PSScriptRoot
 $validEnvs = @('dev', 'qa', 'uat', 'prod')
 
 if ($script:BMEnvironment -notin $validEnvs) {
-    Write-Warning ("Parent folder '{0}' is not a recognised environment " +
-                   "(dev/qa/uat/prod). Treating as 'dev'.") -f $script:BMEnvironment
+    Write-Warning (("Parent folder '{0}' is not a recognised environment " +
+                   "(dev/qa/uat/prod). Treating as 'dev'.") -f $script:BMEnvironment)
     $script:BMEnvironment = 'dev'
 }
 

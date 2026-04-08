@@ -81,7 +81,7 @@ function Write-BMLog {
     )
 
     $ts   = (Get-Date).ToString('HH:mm:ss')
-    $line = '[{0}] [{1,-7}] [{2,-15}] {3}' -f $ts, $Level.ToUpper(), $MachineName.ToUpper(), $Message
+    $line = ('[{0}] [{1,-7}] [{2,-15}] {3}' -f $ts, $Level.ToUpper(), $MachineName.ToUpper(), $Message)
 
     # Console
     $fgColor = switch ($Level) {
@@ -306,7 +306,7 @@ function Update-BMJobElapsed {
     param([object]$Job)
     if ($null -ne $Job.StartedAt) {
         $e = [datetime]::Now - $Job.StartedAt
-        $Job.ElapsedDisplay = '{0:hh\:mm\:ss}' -f $e
+        $Job.ElapsedDisplay = ('{0:hh\:mm\:ss}' -f $e)
     }
 }
 
@@ -359,7 +359,7 @@ function Invoke-BMStep_Scheduled {
         $h = [math]::Floor($remaining.TotalHours)
         $m = $remaining.Minutes
         $s = $remaining.Seconds
-        $Job.Message = 'Scheduled - starts in {0:D2}:{1:D2}:{2:D2}' -f $h, $m, $s
+        $Job.Message = ('Scheduled - starts in {0:D2}:{1:D2}:{2:D2}' -f $h, $m, $s)
     }
 }
 
@@ -424,7 +424,7 @@ function Invoke-BMStep_StagingWait {
     }
     else {
         $mins = [math]::Ceiling($remaining.TotalMinutes)
-        $Job.Message = "Staging wait - ~{0} min remaining before reboot..." -f $mins
+        $Job.Message = ("Staging wait - ~{0} min remaining before reboot..." -f $mins)
     }
 }
 
@@ -582,7 +582,7 @@ function Invoke-BMResetForRetry {
     $Job.StageEnteredAt = $null
     $Job.StagedAt       = $null
     $Job.StatusIcon     = [char]0x1F503  # 
-    $Job.Message        = "Retry {0}/{1} - re-staging..." -f $Job.RetryCount, $script:MaxRetries
+    $Job.Message        = ("Retry {0}/{1} - re-staging..." -f $Job.RetryCount, $script:MaxRetries)
 }
 
 # -----------------------------------------------------------------------------
