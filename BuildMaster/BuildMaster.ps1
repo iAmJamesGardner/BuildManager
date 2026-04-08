@@ -1,4 +1,4 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
     BuildMaster - Machine Rebuild Manager
@@ -28,9 +28,9 @@ param()
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  ENVIRONMENT DETECTION  (parent folder name → dev / qa / uat / prod)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+#  ENVIRONMENT DETECTION  (parent folder name  dev / qa / uat / prod)
+# -----------------------------------------------------------------------------
 $script:BMEnvironment = Split-Path -Leaf $PSScriptRoot
 $validEnvs = @('dev', 'qa', 'uat', 'prod')
 
@@ -40,9 +40,9 @@ if ($script:BMEnvironment -notin $validEnvs) {
     $script:BMEnvironment = 'dev'
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  PATHS
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 $script:ModulesPath = Join-Path $PSScriptRoot 'Modules'
 $script:LogPath     = Join-Path $PSScriptRoot 'Logs'
 
@@ -50,17 +50,17 @@ if (-not (Test-Path $script:LogPath)) {
     New-Item -ItemType Directory -Path $script:LogPath -Force | Out-Null
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  WPF ASSEMBLIES  (must load before modules that reference WPF types)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 Add-Type -AssemblyName PresentationFramework  -ErrorAction Stop
 Add-Type -AssemblyName PresentationCore       -ErrorAction Stop
 Add-Type -AssemblyName WindowsBase            -ErrorAction Stop
 Add-Type -AssemblyName System.Windows.Forms   -ErrorAction Stop   # MessageBox helper
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  IMPORT MODULES  (order matters — Auth/API before Engine, all before GUI)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+#  IMPORT MODULES  (order matters - Auth/API before Engine, all before GUI)
+# -----------------------------------------------------------------------------
 $moduleOrder = @('BM-Auth', 'BM-API', 'BM-Engine', 'BM-GUI')
 
 foreach ($mod in $moduleOrder) {
@@ -71,9 +71,9 @@ foreach ($mod in $moduleOrder) {
     Import-Module $modPath -Force -Global -DisableNameChecking
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  LAUNCH GUI
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 Set-BMLogPath -Path $script:LogPath
 
 Start-BMGui -Environment $script:BMEnvironment -LogPath $script:LogPath

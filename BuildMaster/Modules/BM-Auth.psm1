@@ -1,17 +1,17 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    BM-Auth — Authentication module for BuildMaster
+    BM-Auth - Authentication module for BuildMaster
 .DESCRIPTION
     Manages regular and privileged account credentials for the session.
 
     Regular account  : Always known; obtained via Get-Credential prompt.
     Privileged account: Password unknown to the operator.
                         Two elevation paths are supported:
-                        (A) CyberArk EPM  – if the EPM agent is installed and
+                        (A) CyberArk EPM  - if the EPM agent is installed and
                             a policy permits elevation, the regular account's
                             token is automatically elevated; no priv password needed.
-                        (B) Explicit priv credential – operator supplies the
+                        (B) Explicit priv credential - operator supplies the
                             privileged account credentials at runtime (e.g. via
                             a PSM / CyberArk session or a secondary sign-in).
 #>
@@ -19,13 +19,13 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# ── In-session credential store ───────────────────────────────────────────────
+# -- In-session credential store -----------------------------------------------
 $script:RegularCred     = $null   # [PSCredential]
 $script:PrivilegedInfo  = $null   # @{ Method='EPM'|'Credential'; Credential=$null|[PSCredential] }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  REGULAR ACCOUNT
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 function Get-BMRegularCredential {
     <#
@@ -52,9 +52,9 @@ function Test-BMRegularCredentialSet {
     return ($null -ne $script:RegularCred)
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  PRIVILEGED ACCOUNT
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 function Get-BMPrivilegedInfo {
     <#
@@ -64,9 +64,9 @@ function Get-BMPrivilegedInfo {
         Returns: @{ Method = 'EPM' | 'Credential'
                     Credential = $null | [PSCredential] }
 
-        EPM path    → regular account token is elevated transparently by
+        EPM path     regular account token is elevated transparently by
                       the CyberArk EPM agent; no priv password is stored.
-        Credential  → operator provided explicit priv credentials at startup.
+        Credential   operator provided explicit priv credentials at startup.
     #>
     [CmdletBinding()]
     [OutputType([hashtable])]
@@ -79,11 +79,11 @@ function Get-BMPrivilegedInfo {
     $epmAvailable = Test-BMCyberArkEPMAvailable
 
     if ($epmAvailable) {
-        Write-Host '[Auth] CyberArk EPM agent detected — using policy-based elevation.' -ForegroundColor Cyan
+        Write-Host '[Auth] CyberArk EPM agent detected - using policy-based elevation.' -ForegroundColor Cyan
         $script:PrivilegedInfo = @{ Method = 'EPM'; Credential = $null }
     }
     else {
-        Write-Host '[Auth] EPM not detected — prompting for privileged credentials.' -ForegroundColor Yellow
+        Write-Host '[Auth] EPM not detected - prompting for privileged credentials.' -ForegroundColor Yellow
         $privCred = Get-Credential -Message 'Enter PRIVILEGED account credentials (e.g. DOMAIN\adm_jsmith)'
         $script:PrivilegedInfo = @{ Method = 'Credential'; Credential = $privCred }
     }
@@ -101,9 +101,9 @@ function Test-BMPrivilegedInfoSet {
     return ($null -ne $script:PrivilegedInfo)
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  CYBERARK EPM DETECTION
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 function Test-BMCyberArkEPMAvailable {
     <#
@@ -134,9 +134,9 @@ function Test-BMCyberArkEPMAvailable {
     return $false
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  PRIVILEGED COMMAND EXECUTION
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 function Invoke-BMPrivilegedCommand {
     <#
@@ -197,9 +197,9 @@ function Clear-BMCredentials {
     Write-Host '[Auth] Credentials cleared.' -ForegroundColor DarkGray
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  EXPORTS
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 Export-ModuleMember -Function @(
     'Get-BMRegularCredential',
     'Set-BMRegularCredential',

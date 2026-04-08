@@ -1,26 +1,26 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    BM-GUI — WPF interface for BuildMaster
+    BM-GUI - WPF interface for BuildMaster
 .DESCRIPTION
     Defines the full WPF window, wires all controls to engine/API functions,
     and drives a UI-refresh DispatcherTimer for live grid/log updates.
 
-    Designed for PS 5.1 — no MVVM framework, no external dependencies.
+    Designed for PS 5.1 - no MVVM framework, no external dependencies.
     All UI work runs on the WPF Dispatcher thread.
 #>
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  XAML DEFINITION
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 [string]$script:XAML = @'
 <Window
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    Title="BuildMaster — Machine Rebuild Manager"
+    Title="BuildMaster - Machine Rebuild Manager"
     Height="820" Width="1250"
     MinHeight="600" MinWidth="900"
     WindowStartupLocation="CenterScreen"
@@ -109,7 +109,7 @@ $ErrorActionPreference = 'Stop'
             <RowDefinition Height="30"/>  <!-- Status bar -->
         </Grid.RowDefinitions>
 
-        <!-- ═══════════════════  HEADER  ═══════════════════ -->
+        <!-- ===================  HEADER  =================== -->
         <Border Grid.Row="0" Background="#1A1A35" BorderBrush="#303058" BorderThickness="0,0,0,1">
             <Grid Margin="12,0">
                 <Grid.ColumnDefinitions>
@@ -119,7 +119,7 @@ $ErrorActionPreference = 'Stop'
 
                 <!-- Left: title + env badge -->
                 <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                    <TextBlock Text="⚙" FontSize="26" Foreground="#7070FF"
+                    <TextBlock Text="" FontSize="26" Foreground="#7070FF"
                                VerticalAlignment="Center" Margin="0,0,8,0"/>
                     <TextBlock Text="BuildMaster" FontSize="22" FontWeight="Bold"
                                Foreground="White" VerticalAlignment="Center"/>
@@ -140,22 +140,22 @@ $ErrorActionPreference = 'Stop'
             </Grid>
         </Border>
 
-        <!-- ═══════════════════  MAIN CONTENT  ═══════════════════ -->
+        <!-- ===================  MAIN CONTENT  =================== -->
         <Grid Grid.Row="1" Margin="10,8,10,8">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="265"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
-            <!-- ──────────────  LEFT PANEL  ────────────── -->
+            <!-- --------------  LEFT PANEL  -------------- -->
             <StackPanel Grid.Column="0" Margin="0,0,10,0">
 
                 <!-- Credentials -->
                 <GroupBox Header=" Credentials " Margin="0,0,0,8">
                     <StackPanel Margin="2">
-                        <Button x:Name="BtnSetRegCred"  Content="🔑 Set Regular Account"
+                        <Button x:Name="BtnSetRegCred"  Content=" Set Regular Account"
                                 Height="32" Margin="0,4,0,0"/>
-                        <Button x:Name="BtnSetPrivCred" Content="🔐 Set Privileged Account"
+                        <Button x:Name="BtnSetPrivCred" Content=" Set Privileged Account"
                                 Height="32" Margin="0,6,0,4"/>
                         <TextBlock x:Name="CredsSummary" TextWrapping="Wrap"
                                    FontSize="10.5" Foreground="#707098" Margin="2,2,0,0"/>
@@ -176,7 +176,7 @@ $ErrorActionPreference = 'Stop'
                                  FontFamily="Consolas" FontSize="12"
                                  VerticalContentAlignment="Top"/>
                         <Button x:Name="BtnStartRebuild"
-                                Content="▶  Start Rebuild"
+                                Content=">  Start Rebuild"
                                 Height="36" Margin="0,8,0,0"
                                 Background="#1B5E20" Foreground="White"
                                 FontWeight="Bold" FontSize="13"
@@ -224,7 +224,7 @@ $ErrorActionPreference = 'Stop'
                 </GroupBox>
             </StackPanel>
 
-            <!-- ──────────────  RIGHT PANEL  ────────────── -->
+            <!-- --------------  RIGHT PANEL  -------------- -->
             <Grid Grid.Column="1">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="*"/>
@@ -372,7 +372,7 @@ $ErrorActionPreference = 'Stop'
             </Grid>
         </Grid>
 
-        <!-- ═══════════════════  STATUS BAR  ═══════════════════ -->
+        <!-- ===================  STATUS BAR  =================== -->
         <Border Grid.Row="2" Background="#151525" BorderBrush="#252545" BorderThickness="0,1,0,0">
             <Grid Margin="10,0">
                 <Grid.ColumnDefinitions>
@@ -389,13 +389,13 @@ $ErrorActionPreference = 'Stop'
 </Window>
 '@
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  HELPER: ENV BADGE COLOR
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Get-BMEnvColor {
     param([string]$Env)
     switch ($Env.ToLower()) {
-        'prod' { return '#C62828' }   # Red   — production
+        'prod' { return '#C62828' }   # Red   - production
         'uat'  { return '#6A1B9A' }   # Purple
         'qa'   { return '#E65100' }   # Orange
         'dev'  { return '#1565C0' }   # Blue
@@ -403,9 +403,9 @@ function Get-BMEnvColor {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  HELPER: ROW BACKGROUND COLOR
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Get-BMRowBrush {
     param([string]$Status)
     switch ($Status) {
@@ -423,9 +423,9 @@ function Get-BMRowBrush {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  MAIN ENTRY POINT
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 function Start-BMGui {
     <#
     .SYNOPSIS  Loads and shows the BuildMaster WPF window. Blocks until closed.
@@ -436,7 +436,7 @@ function Start-BMGui {
         [Parameter(Mandatory)][string]$LogPath
     )
 
-    # ── Load XAML ─────────────────────────────────────────────────────────────
+    # -- Load XAML -------------------------------------------------------------
     try {
         [xml]$xamlDoc = $script:XAML
         $reader       = New-Object System.Xml.XmlNodeReader($xamlDoc)
@@ -446,7 +446,7 @@ function Start-BMGui {
         throw "Failed to load BuildMaster XAML: $($_.Exception.Message)"
     }
 
-    # ── Get named controls ────────────────────────────────────────────────────
+    # -- Get named controls ----------------------------------------------------
     $ctrl = @{}
     $controlNames = @(
         'EnvBadge','EnvLabel','EngineStatusLabel',
@@ -465,13 +465,13 @@ function Start-BMGui {
         }
     }
 
-    # ── Environment badge ─────────────────────────────────────────────────────
+    # -- Environment badge -----------------------------------------------------
     $envColor = Get-BMEnvColor -Env $Environment
     $ctrl['EnvBadge'].Background = New-Object System.Windows.Media.SolidColorBrush(
         [System.Windows.Media.ColorConverter]::ConvertFromString($envColor))
     $ctrl['EnvLabel'].Text = $Environment.ToUpper()
 
-    # ── Register UI log sink with engine ─────────────────────────────────────
+    # -- Register UI log sink with engine -------------------------------------
     $logCtrl    = $ctrl['TxtLog']
     $logScroll  = $ctrl['LogScroller']
     Register-BMUILogSink -Sink {
@@ -480,10 +480,10 @@ function Start-BMGui {
         $logScroll.ScrollToBottom()
     }
 
-    # ── Bind ObservableCollection to DataGrid ─────────────────────────────────
+    # -- Bind ObservableCollection to DataGrid ---------------------------------
     $ctrl['JobGrid'].ItemsSource = Get-BMJobs
 
-    # ── Row coloring on load/refresh ──────────────────────────────────────────
+    # -- Row coloring on load/refresh ------------------------------------------
     $ctrl['JobGrid'].Add_LoadingRow({
         param($s, $e)
         $item = $e.Row.DataContext
@@ -492,7 +492,7 @@ function Start-BMGui {
         }
     })
 
-    # ── Cancel button in DataGrid rows ────────────────────────────────────────
+    # -- Cancel button in DataGrid rows ----------------------------------------
     $ctrl['JobGrid'].Add_PreviewMouseLeftButtonUp({
         param($s, $e)
         # Walk up the visual tree to find a Button
@@ -518,37 +518,37 @@ function Start-BMGui {
         }
     })
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
     #  CREDENTIAL BUTTONS
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
 
     $updateCredsDisplay = {
         # Regular account
         if (Test-BMRegularCredentialSet) {
             $regCred = Get-BMRegularCredential
-            $ctrl['RegCredLabel'].Text       = "🔑 Regular: $($regCred.UserName)"
+            $ctrl['RegCredLabel'].Text       = " Regular: $($regCred.UserName)"
             $ctrl['RegCredLabel'].Foreground = [System.Windows.Media.Brushes]::LightGreen
         } else {
-            $ctrl['RegCredLabel'].Text       = '🔑 Regular: not set'
+            $ctrl['RegCredLabel'].Text       = ' Regular: not set'
             $ctrl['RegCredLabel'].Foreground = [System.Windows.Media.Brushes]::Salmon
         }
         # Privileged account
         if (Test-BMPrivilegedInfoSet) {
             $pInfo = Get-BMPrivilegedInfo
-            $label = if ($pInfo.Method -eq 'EPM') { '🔐 Priv: EPM (auto-elevate)' }
-                     else { "🔐 Priv: $($pInfo.Credential.UserName)" }
+            $label = if ($pInfo.Method -eq 'EPM') { ' Priv: EPM (auto-elevate)' }
+                     else { " Priv: $($pInfo.Credential.UserName)" }
             $ctrl['PrivCredLabel'].Text       = $label
             $ctrl['PrivCredLabel'].Foreground = [System.Windows.Media.Brushes]::LightGreen
         } else {
-            $ctrl['PrivCredLabel'].Text       = '🔐 Priv: not set'
+            $ctrl['PrivCredLabel'].Text       = ' Priv: not set'
             $ctrl['PrivCredLabel'].Foreground = [System.Windows.Media.Brushes]::Goldenrod
         }
         # Summary in left panel
         $regSet  = Test-BMRegularCredentialSet
         $privSet = Test-BMPrivilegedInfoSet
-        $ctrl['CredsSummary'].Text = if ($regSet -and $privSet) { '✓ Both credentials ready' }
-                                     elseif ($regSet)           { '⚠ Privileged not set (needed for physical machines)' }
-                                     else                       { '✗ Regular credentials required to start' }
+        $ctrl['CredsSummary'].Text = if ($regSet -and $privSet) { '[+] Both credentials ready' }
+                                     elseif ($regSet)           { '[!] Privileged not set (needed for physical machines)' }
+                                     else                       { '[X] Regular credentials required to start' }
     }
 
     $ctrl['BtnSetRegCred'].Add_Click({
@@ -573,9 +573,9 @@ function Start-BMGui {
         }
     })
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
     #  START REBUILD BUTTON
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
 
     $ctrl['BtnStartRebuild'].Add_Click({
         # Validate regular credentials
@@ -625,9 +625,9 @@ function Start-BMGui {
         Write-BMLog -Message ("Queued {0} machine(s) for rebuild" -f $machines.Count) -Level Info
     })
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
     #  CLEAR COMPLETED BUTTON
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
 
     $ctrl['BtnClearCompleted'].Add_Click({
         $before = (Get-BMJobs).Count
@@ -636,33 +636,33 @@ function Start-BMGui {
         Write-BMLog -Message "Cleared $removed completed/failed/cancelled job(s)" -Level Info
     })
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
     #  APPLY SETTINGS BUTTON
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
 
     $ctrl['BtnApplySettings'].Add_Click({
         $sw = 35; $pi = 30
         if (-not ([int]::TryParse($ctrl['TxtStagingWait'].Text,  [ref]$sw) -and $sw  -in 1..120)) {
-            [System.Windows.MessageBox]::Show('Staging wait must be 1–120 minutes.', 'Invalid Setting') | Out-Null; return
+            [System.Windows.MessageBox]::Show('Staging wait must be 1-120 minutes.', 'Invalid Setting') | Out-Null; return
         }
         if (-not ([int]::TryParse($ctrl['TxtPollInterval'].Text, [ref]$pi) -and $pi  -in 5..300)) {
-            [System.Windows.MessageBox]::Show('Poll interval must be 5–300 seconds.', 'Invalid Setting') | Out-Null; return
+            [System.Windows.MessageBox]::Show('Poll interval must be 5-300 seconds.', 'Invalid Setting') | Out-Null; return
         }
         Set-BMEngineConfig -StagingWaitMinutes $sw -PollIntervalSeconds $pi
-        Write-BMLog -Message ("Settings applied — staging wait: {0}m  poll: {1}s" -f $sw, $pi) -Level Info
+        Write-BMLog -Message ("Settings applied - staging wait: {0}m  poll: {1}s" -f $sw, $pi) -Level Info
     })
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
     #  CLEAR LOG BUTTON
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
 
     $ctrl['BtnClearLog'].Add_Click({
         $ctrl['TxtLog'].Clear()
     })
 
-    # ─────────────────────────────────────────────────────────────────────────
-    #  UI REFRESH TIMER  (2 sec — updates grid rows and status bar)
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
+    #  UI REFRESH TIMER  (2 sec - updates grid rows and status bar)
+    # -------------------------------------------------------------------------
 
     $uiTimer          = New-Object System.Windows.Threading.DispatcherTimer
     $uiTimer.Interval = [timespan]::FromSeconds(2)
@@ -671,14 +671,14 @@ function Start-BMGui {
         # Refresh DataGrid row rendering (picks up property changes + row colors)
         try { $ctrl['JobGrid'].Items.Refresh() } catch { }
 
-        # Status bar — job summary
+        # Status bar - job summary
         $jobs     = @(Get-BMJobs)
         $total    = $jobs.Count
         $active   = @($jobs | Where-Object { $_.Status -notin @('Completed','Failed','Cancelled') }).Count
         $done     = @($jobs | Where-Object { $_.Status -eq 'Completed' }).Count
         $failed   = @($jobs | Where-Object { $_.Status -eq 'Failed'    }).Count
 
-        $engineState = if (Test-BMEngineRunning) { '● Engine running' } else { '○ Engine idle' }
+        $engineState = if (Test-BMEngineRunning) { '* Engine running' } else { 'o Engine idle' }
         $ctrl['EngineStatusLabel'].Text = $engineState
 
         $ctrl['StatusBarLeft'].Text = if ($total -gt 0) {
@@ -689,16 +689,16 @@ function Start-BMGui {
         $ctrl['StatusBarRight'].Text = "Environment: $Environment  |  {0}" -f (Get-Date -Format 'HH:mm:ss')
     })
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
     #  WINDOW EVENTS
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
 
     $window.Add_Loaded({
         # Initial credential display
         & $updateCredsDisplay
         # Start UI refresh timer
         $uiTimer.Start()
-        Write-BMLog -Message "BuildMaster GUI loaded — Environment: $Environment" -Level Info
+        Write-BMLog -Message "BuildMaster GUI loaded - Environment: $Environment" -Level Info
         Write-BMLog -Message "Network path: \\FileServer\ITTools\BuildMaster\$Environment\BuildMaster.ps1" -Level Debug
     })
 
@@ -723,15 +723,15 @@ function Start-BMGui {
         Clear-BMCredentials
     })
 
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
     #  SHOW WINDOW  (blocks until closed)
-    # ─────────────────────────────────────────────────────────────────────────
+    # -------------------------------------------------------------------------
 
     Write-BMLog -Message 'Launching BuildMaster window...' -Level Info
     $window.ShowDialog() | Out-Null
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  EXPORTS
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 Export-ModuleMember -Function @('Start-BMGui')

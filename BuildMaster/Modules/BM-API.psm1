@@ -1,9 +1,9 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    BM-API — API wrapper module for BuildMaster and VirtualWorks
+    BM-API - API wrapper module for BuildMaster and VirtualWorks
 .DESCRIPTION
-    All outbound HTTP calls live here. No external modules — uses only
+    All outbound HTTP calls live here. No external modules - uses only
     the built-in Invoke-RestMethod (PS 5.1 / .NET 4.x).
 
     BuildMaster API  : http://bm.zz.com/new-api/v1
@@ -38,17 +38,17 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# ── Base URLs ─────────────────────────────────────────────────────────────────
+# -- Base URLs -----------------------------------------------------------------
 $script:BMBaseUrl = 'http://bm.zz.com/new-api/v1'
 $script:VWBaseUrl = 'http://vw.zz.com/vwapi/Desktop'
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  INTERNAL HELPER
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 function Invoke-BMRestCall {
     <#
-    .SYNOPSIS  Internal REST helper — wraps Invoke-RestMethod with PS 5.1 error handling.
+    .SYNOPSIS  Internal REST helper - wraps Invoke-RestMethod with PS 5.1 error handling.
     #>
     [CmdletBinding()]
     param(
@@ -86,16 +86,16 @@ function Invoke-BMRestCall {
             } catch { }
         }
 
-        throw "API Error [$Method $Uri] HTTP $statusCode — $errorBody".Trim()
+        throw "API Error [$Method $Uri] HTTP $statusCode - $errorBody".Trim()
     }
     catch {
-        throw "API Error [$Method $Uri] — $($_.Exception.Message)"
+        throw "API Error [$Method $Uri] - $($_.Exception.Message)"
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  BUILDMASTER — BUILD DATA
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+#  BUILDMASTER - BUILD DATA
+# -----------------------------------------------------------------------------
 
 function Get-BMBuildData {
     <#
@@ -141,9 +141,9 @@ function Invoke-BMStage {
     return Invoke-BMRestCall -Uri $uri -Method POST -Body $body -Credential $Credential
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  BUILDMASTER — STATUS PARSING
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+#  BUILDMASTER - STATUS PARSING
+# -----------------------------------------------------------------------------
 
 function Get-BMCurrentStage {
     <#
@@ -152,7 +152,7 @@ function Get-BMCurrentStage {
     .OUTPUTS  'Staged' | 'Started' | 'OSComplete' | 'Completed' | 'Unknown'
     .DESCRIPTION
         Inspects BuildTimes sorted descending by BuildTime.
-        Priority (highest wins): Completed → OSComplete → Started → Staged.
+        Priority (highest wins): Completed  OSComplete  Started  Staged.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -204,9 +204,9 @@ function Get-BMStageEntryTime {
     return [datetime]$match.BuildTime
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  VIRTUALWORKS
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 function Get-VWDesktop {
     <#
@@ -256,9 +256,9 @@ function Test-IsVirtualMachine {
     return ($null -ne $record)
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  EXPORTS
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 Export-ModuleMember -Function @(
     'Get-BMBuildData',
     'Get-BMLastBuildInstance',

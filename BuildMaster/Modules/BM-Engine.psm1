@@ -1,7 +1,7 @@
-#Requires -Version 5.1
+﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    BM-Engine — Build orchestration state machine
+    BM-Engine - Build orchestration state machine
 .DESCRIPTION
     Manages a collection of MachineJob objects through the full rebuild lifecycle.
     A WPF DispatcherTimer drives the engine on the UI thread, polling BuildMaster
@@ -9,30 +9,30 @@
 
     STATE MACHINE:
         Pending
-          └─► Staging         (Invoke-BMStage API call issued)
-                └─► StagingWait   (success; waiting 30-45 min)
-                      └─► Rebooting     (wait elapsed; reboot command sent)
-                            └─► Monitoring    (reboot confirmed; polling BuildMaster)
-                                  ├─► [BuildStage = Staged]     (≤ 1 hr limit)
-                                  ├─► [BuildStage = Started]    (≤ 45 min limit)
-                                  ├─► [BuildStage = OSComplete] (≤ 5 hr limit)
-                                  └─► Completed
+          +-> Staging         (Invoke-BMStage API call issued)
+                +-> StagingWait   (success; waiting 30-45 min)
+                      +-> Rebooting     (wait elapsed; reboot command sent)
+                            +-> Monitoring    (reboot confirmed; polling BuildMaster)
+                                  +-> [BuildStage = Staged]     ( 1 hr limit)
+                                  +-> [BuildStage = Started]    ( 45 min limit)
+                                  +-> [BuildStage = OSComplete] ( 5 hr limit)
+                                  +-> Completed
         (any stage failure)
-          └─► [RetryCount < 3] → back to Pending (re-stage)
-          └─► [RetryCount ≥ 3] → Failed
+          +-> [RetryCount < 3]  back to Pending (re-stage)
+          +-> [RetryCount  3]  Failed
 
     TIMEOUT RULES (per spec):
-        Staged     stage  → must advance within 1 hour
-        Started    stage  → must advance within 45 minutes
-        OSComplete stage  → must advance within 5 hours
+        Staged     stage   must advance within 1 hour
+        Started    stage   must advance within 45 minutes
+        OSComplete stage   must advance within 5 hours
 #>
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  CONSTANTS
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 $script:MaxRetries          = 3
 $script:StagingWaitMinutes  = 35   # Default: 35 min (configurable via Set-BMEngineConfig)
 $script:PollIntervalSeconds = 30   # How often the engine ticks
@@ -43,19 +43,19 @@ $script:StageTimeouts = [ordered]@{
     'OSComplete' = [timespan]::FromHours(5)
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  JOB COLLECTION  (ObservableCollection so WPF ItemsSource gets add/remove events)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 $script:Jobs = New-Object 'System.Collections.ObjectModel.ObservableCollection[Object]'
 
-# Engine timer (WPF DispatcherTimer — runs on UI thread)
+# Engine timer (WPF DispatcherTimer - runs on UI thread)
 $script:EngineTimer = $null
 
-# ─────────────────────────────────────────────────────────────────────────────
-#  LOGGING  (shared with GUI — GUI module registers a UI sink)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
+#  LOGGING  (shared with GUI - GUI module registers a UI sink)
+# -----------------------------------------------------------------------------
 $script:LogPath    = $null
-$script:UILogSink  = $null   # [scriptblock] — called by Write-BMLog for GUI output
+$script:UILogSink  = $null   # [scriptblock] - called by Write-BMLog for GUI output
 
 function Set-BMLogPath {
     [CmdletBinding()]
@@ -102,42 +102,42 @@ function Write-BMLog {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  JOB FACTORY
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 function New-BMJobObject {
     param([Parameter(Mandatory)][string]$MachineName)
 
     return [PSCustomObject][ordered]@{
         MachineName     = $MachineName.Trim().ToUpper()
-        # ── State ──────────────────────────────────────────────────────────
+        # -- State ----------------------------------------------------------
         Status          = 'Pending'      # Engine state (string for simple binding)
         BuildStage      = 'N/A'          # Last BuildMaster stage seen
-        # ── Timestamps ────────────────────────────────────────────────────
+        # -- Timestamps ----------------------------------------------------
         StartedAt       = [datetime]::Now
         StagedAt        = $null          # When Invoke-BMStage completed
         StageEnteredAt  = $null          # When current BuildStage was entered
         CompletedAt     = $null
-        # ── BuildMaster data ──────────────────────────────────────────────
+        # -- BuildMaster data ----------------------------------------------
         BuildId         = ''
         InstanceId      = ''
-        # ── Metadata ──────────────────────────────────────────────────────
+        # -- Metadata ------------------------------------------------------
         IsVM            = $null          # $null=unknown, $true=VM/DiDC, $false=Physical
         RetryCount      = 0
         CancelRequested = $false
-        # ── Display ───────────────────────────────────────────────────────
-        Message         = 'Queued — waiting for credentials & start signal'
-        StatusIcon      = [char]0x23F3   # ⏳
+        # -- Display -------------------------------------------------------
+        Message         = 'Queued - waiting for credentials & start signal'
+        StatusIcon      = [char]0x23F3   # [wait]
         MachineType     = 'Unknown'
         ElapsedDisplay  = '00:00:00'
         LastError       = ''
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  PUBLIC JOB MANAGEMENT
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 function Add-BMJob {
     [CmdletBinding()]
@@ -165,7 +165,7 @@ function Stop-BMJob {
         $job.CancelRequested = $true
         $job.Status          = 'Cancelled'
         $job.Message         = 'Cancelled by user'
-        $job.StatusIcon      = [char]0x274C   # ❌
+        $job.StatusIcon      = [char]0x274C   # [X]
         Write-BMLog -MachineName $MachineName -Message 'Job cancelled by user' -Level Warning
     }
 }
@@ -195,9 +195,9 @@ function Clear-BMCompletedJobs {
     foreach ($j in $toRemove) { $script:Jobs.Remove($j) | Out-Null }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  ENGINE LIFECYCLE
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 function Set-BMEngineConfig {
     [CmdletBinding()]
@@ -228,7 +228,7 @@ function Start-BMEngine {
     $script:EngineTimer.Add_Tick({ Invoke-BMEngineTick })
     $script:EngineTimer.Start()
 
-    Write-BMLog -Message ("Engine started — poll interval: {0}s  staging wait: {1}m" -f
+    Write-BMLog -Message ("Engine started - poll interval: {0}s  staging wait: {1}m" -f
                            $script:PollIntervalSeconds, $script:StagingWaitMinutes) -Level Info
 }
 
@@ -246,9 +246,9 @@ function Test-BMEngineRunning {
     return ($null -ne $script:EngineTimer -and $script:EngineTimer.IsEnabled)
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  ENGINE TICK  (called every PollInterval by DispatcherTimer)
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 function Invoke-BMEngineTick {
     $activeStatuses = @('Pending','Staging','StagingWait','Rebooting','Monitoring','Error')
@@ -268,7 +268,7 @@ function Invoke-BMEngineTick {
             $job.LastError = $_.Exception.Message
             $job.Message   = "Unexpected error: $($_.Exception.Message)"
             $job.Status    = 'Error'
-            $job.StatusIcon = [char]0x26A0  # ⚠
+            $job.StatusIcon = [char]0x26A0  # [!]
             Write-BMLog -MachineName $job.MachineName `
                         -Message "Unhandled error: $($_.Exception.Message)" `
                         -Level Error
@@ -290,16 +290,16 @@ function Update-BMJobElapsed {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  STATE MACHINE STEPS
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 function Invoke-BMJobStep {
     param([Parameter(Mandatory)][object]$Job)
 
     switch ($Job.Status) {
         'Pending'     { Invoke-BMStep_Stage      -Job $Job }
-        'Staging'     { <# fire-and-forget; next tick checks result — no-op here #> }
+        'Staging'     { <# fire-and-forget; next tick checks result - no-op here #> }
         'StagingWait' { Invoke-BMStep_StagingWait -Job $Job }
         'Rebooting'   { Invoke-BMStep_Reboot      -Job $Job }
         'Monitoring'  { Invoke-BMStep_Monitor      -Job $Job }
@@ -315,13 +315,13 @@ function Invoke-BMJobStep {
     }
 }
 
-# ── Step: Stage ───────────────────────────────────────────────────────────────
+# -- Step: Stage ---------------------------------------------------------------
 function Invoke-BMStep_Stage {
     param([object]$Job)
 
     $Job.Status    = 'Staging'
     $Job.Message   = 'Contacting BuildMaster to stage machine...'
-    $Job.StatusIcon = [char]0x1F4E4  # 📤
+    $Job.StatusIcon = [char]0x1F4E4  # 
 
     try {
         $regCred = Get-BMRegularCredential
@@ -341,7 +341,7 @@ function Invoke-BMStep_Stage {
 
         $Job.StagedAt   = [datetime]::Now
         $Job.Status     = 'StagingWait'
-        $Job.StatusIcon = [char]0x23F0  # ⏰
+        $Job.StatusIcon = [char]0x23F0  # [alarm]
         $Job.Message    = "Staged. Waiting $($script:StagingWaitMinutes) min before reboot..."
 
         Write-BMLog -MachineName $Job.MachineName `
@@ -358,7 +358,7 @@ function Invoke-BMStep_Stage {
     }
 }
 
-# ── Step: Staging Wait ────────────────────────────────────────────────────────
+# -- Step: Staging Wait --------------------------------------------------------
 function Invoke-BMStep_StagingWait {
     param([object]$Job)
 
@@ -371,16 +371,16 @@ function Invoke-BMStep_StagingWait {
     if ($remaining.TotalSeconds -le 0) {
         $Job.Status     = 'Rebooting'
         $Job.Message    = 'Staging wait complete. Sending reboot...'
-        $Job.StatusIcon = [char]0x1F504  # 🔄
+        $Job.StatusIcon = [char]0x1F504  # 
         Write-BMLog -MachineName $Job.MachineName -Message 'Staging wait period complete. Initiating reboot.' -Level Info
     }
     else {
         $mins = [math]::Ceiling($remaining.TotalMinutes)
-        $Job.Message = "Staging wait — ~{0} min remaining before reboot..." -f $mins
+        $Job.Message = "Staging wait - ~{0} min remaining before reboot..." -f $mins
     }
 }
 
-# ── Step: Reboot ──────────────────────────────────────────────────────────────
+# -- Step: Reboot --------------------------------------------------------------
 function Invoke-BMStep_Reboot {
     param([object]$Job)
 
@@ -388,12 +388,12 @@ function Invoke-BMStep_Reboot {
 
     try {
         if ($Job.IsVM -eq $true) {
-            # ── DiDC / VM: VirtualWorks API (regular account) ──────────────
+            # -- DiDC / VM: VirtualWorks API (regular account) --------------
             Write-BMLog -MachineName $Job.MachineName -Message 'Rebooting via VirtualWorks API' -Level Info
             Invoke-VWReboot -ComputerName $Job.MachineName -Credential $regCred | Out-Null
         }
         else {
-            # ── Physical: privileged account ───────────────────────────────
+            # -- Physical: privileged account -------------------------------
             $privInfo = Get-BMPrivilegedInfo
             Write-BMLog -MachineName $Job.MachineName `
                         -Message ("Rebooting physical machine via privileged account [Method: {0}]" -f $privInfo.Method) `
@@ -407,7 +407,7 @@ function Invoke-BMStep_Reboot {
         $Job.Status         = 'Monitoring'
         $Job.BuildStage     = 'Waiting'
         $Job.StageEnteredAt = [datetime]::Now
-        $Job.StatusIcon     = [char]0x1F50D  # 🔍
+        $Job.StatusIcon     = [char]0x1F50D  # 
         $Job.Message        = 'Reboot sent. Monitoring BuildMaster...'
 
         Write-BMLog -MachineName $Job.MachineName -Message 'Reboot command sent successfully. Entering monitoring.' -Level Info
@@ -422,11 +422,11 @@ function Invoke-BMStep_Reboot {
     }
 }
 
-# ── Step: Monitor ─────────────────────────────────────────────────────────────
+# -- Step: Monitor -------------------------------------------------------------
 function Invoke-BMStep_Monitor {
     param([object]$Job)
 
-    # ── Timeout check for current BuildStage ─────────────────────────────────
+    # -- Timeout check for current BuildStage ---------------------------------
     if ($Job.BuildStage -in $script:StageTimeouts.Keys -and $null -ne $Job.StageEnteredAt) {
         $elapsed = [datetime]::Now - $Job.StageEnteredAt
         $limit   = $script:StageTimeouts[$Job.BuildStage]
@@ -436,13 +436,13 @@ function Invoke-BMStep_Monitor {
             Write-BMLog -MachineName $Job.MachineName -Message $msg -Level Warning
             $Job.LastError = $msg
             $Job.Status    = 'Error'
-            $Job.StatusIcon = [char]0x23F1  # ⏱
+            $Job.StatusIcon = [char]0x23F1  # [timer]
             Invoke-BMHandleFailure -Job $Job
             return
         }
     }
 
-    # ── Poll BuildMaster ─────────────────────────────────────────────────────
+    # -- Poll BuildMaster -----------------------------------------------------
     try {
         $regCred   = Get-BMRegularCredential
         $buildData = Get-BMBuildData -ComputerName $Job.MachineName -Credential $regCred
@@ -455,38 +455,38 @@ function Invoke-BMStep_Monitor {
 
         $newStage = Get-BMCurrentStage -BuildData $buildData
 
-        # ── Advance state on stage transitions ───────────────────────────
+        # -- Advance state on stage transitions ---------------------------
         if ($newStage -ne $Job.BuildStage -and $newStage -ne 'Unknown') {
             $prev = $Job.BuildStage
             $Job.BuildStage     = $newStage
             $Job.StageEnteredAt = Get-BMStageEntryTime -BuildData $buildData -Stage $newStage
 
             Write-BMLog -MachineName $Job.MachineName `
-                        -Message ("Stage advanced: {0} → {1}" -f $prev, $newStage) `
+                        -Message ("Stage advanced: {0}  {1}" -f $prev, $newStage) `
                         -Level Info
         }
 
-        # ── Terminal state ────────────────────────────────────────────────
+        # -- Terminal state ------------------------------------------------
         switch ($newStage) {
             'Completed' {
                 $Job.Status       = 'Completed'
                 $Job.CompletedAt  = [datetime]::Now
-                $Job.StatusIcon   = [char]0x2705  # ✅
+                $Job.StatusIcon   = [char]0x2705  # [OK]
                 $Job.Message      = 'Build completed successfully!'
-                Write-BMLog -MachineName $Job.MachineName -Message 'BUILD COMPLETED ✓' -Level Info
+                Write-BMLog -MachineName $Job.MachineName -Message 'BUILD COMPLETED [+]' -Level Info
                 return
             }
             'OSComplete' {
-                $Job.Message    = 'OS complete — applying post-build configuration...'
-                $Job.StatusIcon = [char]0x1F4BB  # 💻
+                $Job.Message    = 'OS complete - applying post-build configuration...'
+                $Job.StatusIcon = [char]0x1F4BB  # 
             }
             'Started' {
-                $Job.Message    = 'Build started — OS installing...'
-                $Job.StatusIcon = [char]0x1F4E6  # 📦
+                $Job.Message    = 'Build started - OS installing...'
+                $Job.StatusIcon = [char]0x1F4E6  # 
             }
             'Staged' {
-                $Job.Message    = 'Machine staged — waiting for build to start...'
-                $Job.StatusIcon = [char]0x1F7E1  # 🟡
+                $Job.Message    = 'Machine staged - waiting for build to start...'
+                $Job.StatusIcon = [char]0x1F7E1  # 
             }
             default {
                 $Job.Message = "Monitoring... (last seen: $newStage)"
@@ -502,9 +502,9 @@ function Invoke-BMStep_Monitor {
     }
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  RETRY / FAILURE HANDLING
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 
 function Invoke-BMHandleFailure {
     param([object]$Job)
@@ -513,7 +513,7 @@ function Invoke-BMHandleFailure {
 
     if ($Job.RetryCount -ge $script:MaxRetries) {
         $Job.Status     = 'Failed'
-        $Job.StatusIcon = [char]0x274C  # ❌
+        $Job.StatusIcon = [char]0x274C  # [X]
         $Job.Message    = "FAILED after $script:MaxRetries retries. Last: $($Job.LastError)"
         Write-BMLog -MachineName $Job.MachineName `
                     -Message ("Job FAILED after {0} retries." -f $script:MaxRetries) `
@@ -533,13 +533,13 @@ function Invoke-BMResetForRetry {
     $Job.BuildStage     = 'N/A'
     $Job.StageEnteredAt = $null
     $Job.StagedAt       = $null
-    $Job.StatusIcon     = [char]0x1F503  # 🔃
-    $Job.Message        = "Retry {0}/{1} — re-staging..." -f $Job.RetryCount, $script:MaxRetries
+    $Job.StatusIcon     = [char]0x1F503  # 
+    $Job.Message        = "Retry {0}/{1} - re-staging..." -f $Job.RetryCount, $script:MaxRetries
 }
 
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 #  EXPORTS
-# ─────────────────────────────────────────────────────────────────────────────
+# -----------------------------------------------------------------------------
 Export-ModuleMember -Function @(
     # Logging
     'Set-BMLogPath',

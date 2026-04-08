@@ -1,5 +1,5 @@
-#
-# BuildMaster JEA Role Capability — RebuildAdmin.psrc
+﻿#
+# BuildMaster JEA Role Capability - RebuildAdmin.psrc
 #
 # Defines the EXACT set of commands, parameters, and providers that an
 # operator connected to the 'BuildMasterAdmin' JEA endpoint may use.
@@ -13,25 +13,25 @@
 #
 
 @{
-    # ── Schema version ────────────────────────────────────────────────────────
+    # -- Schema version --------------------------------------------------------
     SchemaVersion    = '2.0.0.0'
     GUID             = 'a7f3c21e-88b4-4d0e-9a5f-3c1b7e2d4f80'
     Author           = 'BuildMaster Team'
     Description      = 'Allows BuildMaster operators to perform machine rebuild admin tasks with least privilege.'
     CompanyName      = 'IT Operations'
 
-    # ── Modules to import into the JEA session ────────────────────────────────
+    # -- Modules to import into the JEA session --------------------------------
     # Only modules explicitly listed here are available.
     ModulesToImport  = @()
 
-    # ── Visible cmdlets ───────────────────────────────────────────────────────
+    # -- Visible cmdlets -------------------------------------------------------
     # Format:  'CmdletName'  or  @{ Name='CmdletName'; Parameters=@{...} }
     #
     # Parameter restrictions limit which parameter VALUES can be supplied,
     # preventing lateral movement (e.g. restarting arbitrary services).
     VisibleCmdlets   = @(
 
-        # ── Reboot ────────────────────────────────────────────────────────────
+        # -- Reboot ------------------------------------------------------------
         # Only allow forcing a restart of the LOCAL machine (no -ComputerName).
         # The JEA endpoint is already scoped to a specific target machine.
         @{
@@ -42,7 +42,7 @@
             }
         }
 
-        # ── Service management (limited set) ─────────────────────────────────
+        # -- Service management (limited set) ---------------------------------
         @{
             Name       = 'Get-Service'
             Parameters = @(
@@ -63,7 +63,7 @@
             )
         }
 
-        # ── Event log (read-only, Security/System/Application only) ──────────
+        # -- Event log (read-only, Security/System/Application only) ----------
         @{
             Name       = 'Get-EventLog'
             Parameters = @(
@@ -75,7 +75,7 @@
             )
         }
 
-        # ── Read-only system info ─────────────────────────────────────────────
+        # -- Read-only system info ---------------------------------------------
         'Get-ComputerInfo'
         'Get-Process'
         'Get-HotFix'
@@ -89,7 +89,7 @@
             )
         }
 
-        # ── Network diagnostics ───────────────────────────────────────────────
+        # -- Network diagnostics -----------------------------------------------
         @{
             Name       = 'Test-NetConnection'
             Parameters = @(
@@ -100,7 +100,7 @@
         'Get-NetIPAddress'
         'Get-NetAdapter'
 
-        # ── WMI read-only ─────────────────────────────────────────────────────
+        # -- WMI read-only -----------------------------------------------------
         @{
             Name       = 'Get-WmiObject'
             Parameters = @(
@@ -115,7 +115,7 @@
             )
         }
 
-        # ── Read files — restricted to log paths only ─────────────────────────
+        # -- Read files - restricted to log paths only -------------------------
         @{
             Name       = 'Get-Content'
             Parameters = @(
@@ -125,7 +125,7 @@
             )
         }
 
-        # ── Output / formatting ───────────────────────────────────────────────
+        # -- Output / formatting -----------------------------------------------
         'Format-List'
         'Format-Table'
         'Select-Object'
@@ -136,7 +136,7 @@
         'Write-Output'
     )
 
-    # ── Visible functions ─────────────────────────────────────────────────────
+    # -- Visible functions -----------------------------------------------------
     # Custom functions defined in VisibleFunctions become available in the session.
     # Define them in ScriptsToProcess or FunctionDefinitions below.
     VisibleFunctions = @(
@@ -144,14 +144,14 @@
         'Invoke-BMForceReboot' # Custom: safe reboot wrapper
     )
 
-    # ── Function definitions ──────────────────────────────────────────────────
+    # -- Function definitions --------------------------------------------------
     FunctionDefinitions = @(
         @{
             Name        = 'Get-BMBuildStatus'
             ScriptBlock = {
                 <#
                     Returns a summary of the current machine's build state
-                    from local registry/WMI — no network call required.
+                    from local registry/WMI - no network call required.
                 #>
                 [PSCustomObject]@{
                     ComputerName = $env:COMPUTERNAME
@@ -185,7 +185,7 @@
         }
     )
 
-    # ── Visible external commands (executables) ───────────────────────────────
+    # -- Visible external commands (executables) -------------------------------
     # Only allow specific, signed executables.
     VisibleExternalCommands = @(
         'C:\Windows\System32\ipconfig.exe'
@@ -193,10 +193,10 @@
         'C:\Windows\System32\nslookup.exe'
     )
 
-    # ── Visible aliases ───────────────────────────────────────────────────────
-    VisibleAliases = @()   # No aliases — explicit cmdlet names only
+    # -- Visible aliases -------------------------------------------------------
+    VisibleAliases = @()   # No aliases - explicit cmdlet names only
 
-    # ── Visible providers ─────────────────────────────────────────────────────
+    # -- Visible providers -----------------------------------------------------
     # Restrict to only the providers needed
     VisibleProviders = @(
         'FileSystem'    # For Get-Content on approved paths
@@ -204,7 +204,7 @@
         'Environment'
     )
 
-    # ── Scripts to process at session start ───────────────────────────────────
+    # -- Scripts to process at session start -----------------------------------
     # Register the 'BuildMaster' event log source if needed
     ScriptsToProcess = @()
 }
