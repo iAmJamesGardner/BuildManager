@@ -1,0 +1,210 @@
+#
+# BuildMaster JEA Role Capability — RebuildAdmin.psrc
+#
+# Defines the EXACT set of commands, parameters, and providers that an
+# operator connected to the 'BuildMasterAdmin' JEA endpoint may use.
+#
+# NOTHING outside this file is accessible in the JEA session.
+# ConstrainedLanguage mode is enforced by the session configuration (.pssc).
+#
+# CyberArk EPM controls WHO connects; this file controls WHAT they can do.
+#
+# Reference: https://docs.microsoft.com/en-us/powershell/scripting/learn/remoting/jea/role-capabilities
+#
+
+@{
+    # ── Schema version ────────────────────────────────────────────────────────
+    SchemaVersion    = '2.0.0.0'
+    GUID             = 'a7f3c21e-88b4-4d0e-9a5f-3c1b7e2d4f80'
+    Author           = 'BuildMaster Team'
+    Description      = 'Allows BuildMaster operators to perform machine rebuild admin tasks with least privilege.'
+    CompanyName      = 'IT Operations'
+
+    # ── Modules to import into the JEA session ────────────────────────────────
+    # Only modules explicitly listed here are available.
+    ModulesToImport  = @()
+
+    # ── Visible cmdlets ───────────────────────────────────────────────────────
+    # Format:  'CmdletName'  or  @{ Name='CmdletName'; Parameters=@{...} }
+    #
+    # Parameter restrictions limit which parameter VALUES can be supplied,
+    # preventing lateral movement (e.g. restarting arbitrary services).
+    VisibleCmdlets   = @(
+
+        # ── Reboot ────────────────────────────────────────────────────────────
+        # Only allow forcing a restart of the LOCAL machine (no -ComputerName).
+        # The JEA endpoint is already scoped to a specific target machine.
+        @{
+            Name       = 'Restart-Computer'
+            Parameters = @{
+                Name         = 'Force'
+                ValidateSet  = $true   # Only the -Force switch; no -ComputerName
+            }
+        }
+
+        # ── Service management (limited set) ─────────────────────────────────
+        @{
+            Name       = 'Get-Service'
+            Parameters = @(
+                @{ Name = 'Name'; ValidatePattern = '^(WinRM|BITS|W32tm|CryptSvc)$' }
+            )
+        }
+        @{
+            Name       = 'Stop-Service'
+            Parameters = @(
+                @{ Name = 'Name';  ValidatePattern = '^(WinRM|BITS)$' }
+                @{ Name = 'Force'; ValidateSet     = $true }
+            )
+        }
+        @{
+            Name       = 'Start-Service'
+            Parameters = @(
+                @{ Name = 'Name'; ValidatePattern = '^(WinRM|BITS|W32tm|CryptSvc)$' }
+            )
+        }
+
+        # ── Event log (read-only, Security/System/Application only) ──────────
+        @{
+            Name       = 'Get-EventLog'
+            Parameters = @(
+                @{ Name = 'LogName'; ValidateSet = @('System','Application','Security') }
+                @{ Name = 'Newest';  ValidateRange = @(1, 500) }
+                @{ Name = 'EntryType' }
+                @{ Name = 'Message' }
+                @{ Name = 'After' }
+            )
+        }
+
+        # ── Read-only system info ─────────────────────────────────────────────
+        'Get-ComputerInfo'
+        'Get-Process'
+        'Get-HotFix'
+
+        @{
+            Name       = 'Get-WinEvent'
+            Parameters = @(
+                @{ Name = 'LogName';    ValidateSet = @('System','Application','Security') }
+                @{ Name = 'MaxEvents';  ValidateRange = @(1, 1000) }
+                @{ Name = 'FilterHashtable' }
+            )
+        }
+
+        # ── Network diagnostics ───────────────────────────────────────────────
+        @{
+            Name       = 'Test-NetConnection'
+            Parameters = @(
+                @{ Name = 'ComputerName' }
+                @{ Name = 'Port' }
+            )
+        }
+        'Get-NetIPAddress'
+        'Get-NetAdapter'
+
+        # ── WMI read-only ─────────────────────────────────────────────────────
+        @{
+            Name       = 'Get-WmiObject'
+            Parameters = @(
+                @{ Name = 'Class'; ValidateSet = @(
+                    'Win32_ComputerSystem',
+                    'Win32_OperatingSystem',
+                    'Win32_BIOS',
+                    'Win32_NetworkAdapterConfiguration',
+                    'Win32_DiskDrive',
+                    'Win32_LogicalDisk'
+                )}
+            )
+        }
+
+        # ── Read files — restricted to log paths only ─────────────────────────
+        @{
+            Name       = 'Get-Content'
+            Parameters = @(
+                @{ Name = 'Path'; ValidatePattern = '^C:\\(Windows\\Logs|BuildMaster\\JEA-Transcripts|Temp)\\' }
+                @{ Name = 'Tail' }
+                @{ Name = 'TotalCount' }
+            )
+        }
+
+        # ── Output / formatting ───────────────────────────────────────────────
+        'Format-List'
+        'Format-Table'
+        'Select-Object'
+        'Where-Object'
+        'Sort-Object'
+        'Measure-Object'
+        'Out-String'
+        'Write-Output'
+    )
+
+    # ── Visible functions ─────────────────────────────────────────────────────
+    # Custom functions defined in VisibleFunctions become available in the session.
+    # Define them in ScriptsToProcess or FunctionDefinitions below.
+    VisibleFunctions = @(
+        'Get-BMBuildStatus'    # Custom: queries local build state
+        'Invoke-BMForceReboot' # Custom: safe reboot wrapper
+    )
+
+    # ── Function definitions ──────────────────────────────────────────────────
+    FunctionDefinitions = @(
+        @{
+            Name        = 'Get-BMBuildStatus'
+            ScriptBlock = {
+                <#
+                    Returns a summary of the current machine's build state
+                    from local registry/WMI — no network call required.
+                #>
+                [PSCustomObject]@{
+                    ComputerName = $env:COMPUTERNAME
+                    OSVersion    = (Get-WmiObject Win32_OperatingSystem).Caption
+                    LastBoot     = (Get-WmiObject Win32_OperatingSystem).LastBootUpTime
+                    Uptime       = (Get-Date) - [System.Management.ManagementDateTimeConverter]::ToDateTime(
+                                     (Get-WmiObject Win32_OperatingSystem).LastBootUpTime)
+                    WinRMStatus  = (Get-Service -Name WinRM).Status
+                    Timestamp    = Get-Date
+                }
+            }
+        }
+        @{
+            Name        = 'Invoke-BMForceReboot'
+            ScriptBlock = {
+                <#
+                    Performs a validated, logged, force-restart of the local machine.
+                    Writes an event to the Application log before rebooting.
+                #>
+                param(
+                    [Parameter(Mandatory)]
+                    [ValidateSet('Rebuild','Emergency')]
+                    [string]$Reason
+                )
+                $msg = "BuildMaster JEA: Force reboot initiated. Reason: $Reason. User: $env:USERNAME"
+                Write-EventLog -LogName Application -Source 'BuildMaster' `
+                               -EventId 9001 -EntryType Information -Message $msg `
+                               -ErrorAction SilentlyContinue
+                Restart-Computer -Force
+            }
+        }
+    )
+
+    # ── Visible external commands (executables) ───────────────────────────────
+    # Only allow specific, signed executables.
+    VisibleExternalCommands = @(
+        'C:\Windows\System32\ipconfig.exe'
+        'C:\Windows\System32\ping.exe'
+        'C:\Windows\System32\nslookup.exe'
+    )
+
+    # ── Visible aliases ───────────────────────────────────────────────────────
+    VisibleAliases = @()   # No aliases — explicit cmdlet names only
+
+    # ── Visible providers ─────────────────────────────────────────────────────
+    # Restrict to only the providers needed
+    VisibleProviders = @(
+        'FileSystem'    # For Get-Content on approved paths
+        'Variable'
+        'Environment'
+    )
+
+    # ── Scripts to process at session start ───────────────────────────────────
+    # Register the 'BuildMaster' event log source if needed
+    ScriptsToProcess = @()
+}
