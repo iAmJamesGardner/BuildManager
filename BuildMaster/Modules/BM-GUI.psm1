@@ -595,7 +595,7 @@ function Start-BMGui {
         $ctrl['CredsSummary'].Text = if ($regSet -and $privSet) { '[+] Both credentials ready' }
                                      elseif ($regSet)           { '[!] Privileged not set (needed for physical machines)' }
                                      else                       { '[X] Regular credentials required to start' }
-    }
+    }.GetNewClosure()
 
     $ctrl['BtnSetRegCred'].Add_Click({
         try {
@@ -606,7 +606,7 @@ function Start-BMGui {
         catch {
             Write-BMLog -Message "Regular credential prompt failed: $($_.Exception.Message)" -Level Error
         }
-    })
+    }.GetNewClosure())
 
     $ctrl['BtnSetPrivCred'].Add_Click({
         try {
@@ -617,7 +617,7 @@ function Start-BMGui {
         catch {
             Write-BMLog -Message "Privileged credential prompt failed: $($_.Exception.Message)" -Level Error
         }
-    })
+    }.GetNewClosure())
 
     # -------------------------------------------------------------------------
     #  SCHEDULE TOGGLE  (show/hide date+time picker, relabel Start button)
@@ -634,7 +634,7 @@ function Start-BMGui {
         if ($null -eq $ctrl['DpScheduleDate'].SelectedDate) {
             $ctrl['DpScheduleDate'].SelectedDate = [datetime]::Today
         }
-    })
+    }.GetNewClosure())
 
     $ctrl['ChkSchedule'].Add_Unchecked({
         $ctrl['SchedulePanel'].Visibility    = [System.Windows.Visibility]::Collapsed
@@ -643,7 +643,7 @@ function Start-BMGui {
             [System.Windows.Media.ColorConverter]::ConvertFromString('#1B5E20'))
         $ctrl['BtnStartRebuild'].BorderBrush = New-Object System.Windows.Media.SolidColorBrush(
             [System.Windows.Media.ColorConverter]::ConvertFromString('#388E3C'))
-    })
+    }.GetNewClosure())
 
     # -------------------------------------------------------------------------
     #  START / SCHEDULE REBUILD BUTTON
@@ -739,7 +739,7 @@ function Start-BMGui {
         } else {
             Write-BMLog -Message ("Queued {0} machine(s) for immediate rebuild" -f $machines.Count) -Level Info
         }
-    })
+    }.GetNewClosure())
 
     # -------------------------------------------------------------------------
     #  CLEAR COMPLETED BUTTON
@@ -766,7 +766,7 @@ function Start-BMGui {
         }
         Set-BMEngineConfig -StagingWaitMinutes $sw -PollIntervalSeconds $pi
         Write-BMLog -Message ("Settings applied - staging wait: {0}m  poll: {1}s" -f $sw, $pi) -Level Info
-    })
+    }.GetNewClosure())
 
     # -------------------------------------------------------------------------
     #  CLEAR LOG BUTTON
@@ -774,7 +774,7 @@ function Start-BMGui {
 
     $ctrl['BtnClearLog'].Add_Click({
         $ctrl['TxtLog'].Clear()
-    })
+    }.GetNewClosure())
 
     # -------------------------------------------------------------------------
     #  UI REFRESH TIMER  (2 sec - updates grid rows and status bar)
@@ -806,7 +806,7 @@ function Start-BMGui {
             'No jobs queued. Enter machine names and click Start Rebuild.'
         }
         $ctrl['StatusBarRight'].Text = ("Environment: $Environment  |  {0}" -f (Get-Date -Format 'HH:mm:ss'))
-    })
+    }.GetNewClosure())
 
     # -------------------------------------------------------------------------
     #  WINDOW EVENTS
@@ -819,7 +819,7 @@ function Start-BMGui {
         $uiTimer.Start()
         Write-BMLog -Message "BuildMaster GUI loaded - Environment: $Environment" -Level Info
         Write-BMLog -Message "Network path: \\FileServer\ITTools\BuildMaster\$Environment\BuildMaster.ps1" -Level Debug
-    })
+    }.GetNewClosure())
 
     $window.Add_Closing({
         param($s, $e)
@@ -845,7 +845,7 @@ function Start-BMGui {
         $uiTimer.Stop()
         Stop-BMEngine
         Clear-BMCredentials
-    })
+    }.GetNewClosure())
 
     # -------------------------------------------------------------------------
     #  SHOW WINDOW  (blocks until closed)

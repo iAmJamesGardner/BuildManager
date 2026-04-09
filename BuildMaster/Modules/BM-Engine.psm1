@@ -369,7 +369,7 @@ function Invoke-BMStep_Stage {
 
     $Job.Status    = 'Staging'
     $Job.Message   = 'Contacting BuildMaster to stage machine...'
-    $Job.StatusIcon = [char]0x1F4E4  # 
+    $Job.StatusIcon = [char]0x25B6   # (>) staging arrow
 
     try {
         $regCred = Get-BMRegularCredential
@@ -419,7 +419,7 @@ function Invoke-BMStep_StagingWait {
     if ($remaining.TotalSeconds -le 0) {
         $Job.Status     = 'Rebooting'
         $Job.Message    = 'Staging wait complete. Sending reboot...'
-        $Job.StatusIcon = [char]0x1F504  # 
+        $Job.StatusIcon = [char]0x21BB   # (o>) clockwise arrow - rebooting
         Write-BMLog -MachineName $Job.MachineName -Message 'Staging wait period complete. Initiating reboot.' -Level Info
     }
     else {
@@ -455,7 +455,7 @@ function Invoke-BMStep_Reboot {
         $Job.Status         = 'Monitoring'
         $Job.BuildStage     = 'Waiting'
         $Job.StageEnteredAt = [datetime]::Now
-        $Job.StatusIcon     = [char]0x1F50D  # 
+        $Job.StatusIcon     = [char]0x25CF   # (*) black circle - monitoring
         $Job.Message        = 'Reboot sent. Monitoring BuildMaster...'
 
         Write-BMLog -MachineName $Job.MachineName -Message 'Reboot command sent successfully. Entering monitoring.' -Level Info
@@ -526,15 +526,15 @@ function Invoke-BMStep_Monitor {
             }
             'OSComplete' {
                 $Job.Message    = 'OS complete - applying post-build configuration...'
-                $Job.StatusIcon = [char]0x1F4BB  # 
+                $Job.StatusIcon = [char]0x25A0   # (#) black square - OS complete
             }
             'Started' {
                 $Job.Message    = 'Build started - OS installing...'
-                $Job.StatusIcon = [char]0x1F4E6  # 
+                $Job.StatusIcon = [char]0x25B2   # (^) triangle up - build started
             }
             'Staged' {
                 $Job.Message    = 'Machine staged - waiting for build to start...'
-                $Job.StatusIcon = [char]0x1F7E1  # 
+                $Job.StatusIcon = [char]0x25CB   # (o) white circle - staged
             }
             default {
                 $Job.Message = "Monitoring... (last seen: $newStage)"
@@ -581,7 +581,7 @@ function Invoke-BMResetForRetry {
     $Job.BuildStage     = 'N/A'
     $Job.StageEnteredAt = $null
     $Job.StagedAt       = $null
-    $Job.StatusIcon     = [char]0x1F503  # 
+    $Job.StatusIcon     = [char]0x21BA   # (<o) counterclockwise arrow - retry
     $Job.Message        = ("Retry {0}/{1} - re-staging..." -f $Job.RetryCount, $script:MaxRetries)
 }
 
