@@ -660,12 +660,12 @@ function Start-BMGui {
             return
         }
 
-        # Parse machine names
-        $raw = $ctrl['TxtMachines'].Text
-        $machines = $raw -split "`n" |
-                    ForEach-Object { $_.Trim().ToUpper() } |
-                    Where-Object   { $_ -ne '' } |
-                    Select-Object  -Unique
+        # Parse machine names  (@() forces array so .Count is always valid)
+        $raw      = $ctrl['TxtMachines'].Text
+        $machines = @($raw -split "`n" |
+                      ForEach-Object { $_.Trim().ToUpper() } |
+                      Where-Object   { $_ -ne '' } |
+                      Select-Object  -Unique)
 
         if ($machines.Count -eq 0) {
             [System.Windows.MessageBox]::Show(
