@@ -121,12 +121,15 @@ function Initialize-BMSessionContext {
             if ($Environment -in @('qa','uat','prod')) {
                 $ctx.Blocked     = $true
                 $ctx.BlockReason = (
-                    "This tool requires a privileged account or CyberArk EPM in the " +
-                    "$($Environment.ToUpper()) environment.`n`n$reason`n`n" +
-                    "Close this window and relaunch the tool while logged on as your " +
-                    "$script:PrivDomain account."
+                    "No elevation available in $($Environment.ToUpper()) ($reason)`n`n" +
+                    "VM and DiDC machines will still rebuild normally via the VirtualWorks API.`n" +
+                    "Physical / laptop machines WILL FAIL at the reboot step.`n`n" +
+                    "To rebuild physical machines, close this window and relaunch " +
+                    "while logged on as your $script:PrivDomain account, " +
+                    "or ensure the CyberArk EPM agent is running and your account " +
+                    "is in the EPM authorisation group."
                 )
-                Write-Warning ('[Auth] Session BLOCKED in {0}: {1}' -f $Environment, $reason)
+                Write-Warning ('[Auth] Session BLOCKED (physical reboots only) in {0}: {1}' -f $Environment, $reason)
             }
             else {
                 # DEV - not blocked but WhatIf mode is available

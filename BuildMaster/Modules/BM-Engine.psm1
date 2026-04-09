@@ -464,6 +464,23 @@ function Invoke-BMStep_Reboot {
         else {
             # -- Physical: requires elevation (direct priv session or EPM) ----
             $ctx = Get-BMSessionContext
+
+            # If session has no elevation, fail this job immediately.
+            # No point retrying - it will never succeed without a different session.
+            # VM/DiDC jobs in the same batch are unaffected (they took the branch above).
+            if ($ctx.Blocked -and -not (Get-BMWhatIfMode)) {
+                $failMsg = ("Physical machine reboot requires elevation. " +
+                            "Session '{0}' has no CyberArk EPM or PRIVDOMAIN rights. " +
+                            "Relaunch the tool as a PRIVDOMAIN account to rebuild this machine.") -f $ctx.FullUser
+                $Job.Status     = 'Failed'
+                $Job.StatusIcon = [char]0x274C
+                $Job.Message    = $failMsg
+                $Job.LastError  = $failMsg
+                $Job.RetryCount = $script:MaxRetries   # prevent any retry loop
+                Write-BMLog -MachineName $Job.MachineName -Message $failMsg -Level Error
+                return
+            }
+
             Write-BMLog -MachineName $Job.MachineName `
                         -Message ("Rebooting physical machine [Session: {0}  Elevation: {1}]" -f `
                                   $ctx.FullUser, $ctx.ElevationMethod) `

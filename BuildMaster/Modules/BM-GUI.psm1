@@ -640,8 +640,8 @@ function Start-BMGui {
         $elevReady = $ctx.ElevationMethod -in @('DirectSession','EPM') -or $wifMode
 
         if ($ctx.Blocked) {
-            $ctrl['CredsSummary'].Text       = '[X] Session blocked - see below'
-            $ctrl['CredsSummary'].Foreground = [System.Windows.Media.Brushes]::Salmon
+            $ctrl['CredsSummary'].Text       = '[!] No elevation - VMs OK, physicals will fail'
+            $ctrl['CredsSummary'].Foreground = [System.Windows.Media.Brushes]::Goldenrod
         } elseif ($ctx.IsPrivilegedSession -and -not $regReady) {
             $ctrl['CredsSummary'].Text       = '[!] Set regular credentials to enable API calls'
             $ctrl['CredsSummary'].Foreground = [System.Windows.Media.Brushes]::Goldenrod
@@ -712,15 +712,19 @@ function Start-BMGui {
     # -------------------------------------------------------------------------
 
     $ctrl['BtnStartRebuild'].Add_Click({
-        # -- Session blocked? ------------------------------------------------
+        # -- No elevation available: warn but allow VMs to proceed --------------
         $sessCtx = Get-BMSessionContext
         if ($sessCtx.Blocked) {
-            [System.Windows.MessageBox]::Show(
-                $sessCtx.BlockReason,
-                'Session Blocked',
-                [System.Windows.MessageBoxButton]::OK,
-                [System.Windows.MessageBoxImage]::Stop) | Out-Null
-            return
+            $answer = [System.Windows.MessageBox]::Show(
+                ("No elevation available for this session.`n`n" +
+                 "VM / DiDC machines will rebuild normally via the VirtualWorks API.`n" +
+                 "Physical / laptop machines will FAIL at the reboot step.`n`n" +
+                 "If your list contains only VMs, click Yes to proceed.`n" +
+                 "If it contains physical machines, click No and relaunch as a $($sessCtx.Domain) privileged account."),
+                'Elevation Warning',
+                [System.Windows.MessageBoxButton]::YesNo,
+                [System.Windows.MessageBoxImage]::Warning)
+            if ($answer -ne [System.Windows.MessageBoxResult]::Yes) { return }
         }
 
         # -- Regular credentials required in privileged sessions -------------
@@ -928,12 +932,13 @@ function Start-BMGui {
                 [System.Windows.Media.ColorConverter]::ConvertFromString('#7A4A00'))
         }
 
-        # Blocked state - show banner, disable rebuild button
+        # Blocked state - show warning banner but keep Start button enabled.
+        # VM/DiDC machines work fine with a regular account via the VirtualWorks API.
+        # Only physical machine reboots require elevation; those jobs will fail fast
+        # with a clear message if the list contains physicals.
         if ($ctx.Blocked) {
             $ctrl['BlockedBannerText'].Text   = $ctx.BlockReason
             $ctrl['BlockedBanner'].Visibility = [System.Windows.Visibility]::Visible
-            $ctrl['BtnStartRebuild'].IsEnabled = $false
-            $ctrl['BtnStartRebuild'].Opacity   = 0.4
         }
 
         # What If mode checkbox - DEV only; also show when regular session has
