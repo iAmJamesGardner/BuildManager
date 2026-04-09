@@ -158,6 +158,15 @@ $ErrorActionPreference = 'Stop'
                                 Height="32" Margin="0,6,0,4"/>
                         <TextBlock x:Name="CredsSummary" TextWrapping="Wrap"
                                    FontSize="10.5" Foreground="#707098" Margin="2,2,0,0"/>
+                        <!-- Shown only when session is blocked from admin actions -->
+                        <Border x:Name="BlockedBanner" Visibility="Collapsed"
+                                Background="#3A1010" BorderBrush="#8B2020"
+                                BorderThickness="1" CornerRadius="3"
+                                Margin="0,6,0,0" Padding="6,5">
+                            <TextBlock x:Name="BlockedBannerText"
+                                       TextWrapping="Wrap" FontSize="10.5"
+                                       Foreground="#FF7070" FontWeight="SemiBold"/>
+                        </Border>
                     </StackPanel>
                 </GroupBox>
 
@@ -225,6 +234,7 @@ $ErrorActionPreference = 'Stop'
                             <RowDefinition Height="30"/>
                             <RowDefinition Height="30"/>
                             <RowDefinition Height="30"/>
+                            <RowDefinition Height="Auto"/>
                         </Grid.RowDefinitions>
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
@@ -250,6 +260,14 @@ $ErrorActionPreference = 'Stop'
                         <Button    Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2"
                                    x:Name="BtnApplySettings" Content="Apply Settings"
                                    Height="26" Margin="0,4,0,0"/>
+
+                        <!-- What If mode: DEV environment only, shown programmatically -->
+                        <CheckBox  Grid.Row="4" Grid.Column="0" Grid.ColumnSpan="2"
+                                   x:Name="ChkWhatIf"
+                                   Content="What If Mode  (no commands sent to machines)"
+                                   Foreground="#FF9800" FontSize="10.5"
+                                   Margin="0,10,0,2"
+                                   Visibility="Collapsed"/>
                     </Grid>
                 </GroupBox>
             </StackPanel>
@@ -494,10 +512,12 @@ function Start-BMGui {
     $controlNames = @(
         'EnvBadge','EnvLabel','EngineStatusLabel',
         'RegCredLabel','PrivCredLabel','CredsSummary',
+        'BlockedBanner','BlockedBannerText',
         'BtnSetRegCred','BtnSetPrivCred',
         'TxtMachines','BtnStartRebuild','BtnClearCompleted',
         'ChkSchedule','SchedulePanel','DpScheduleDate','TxtScheduleTime',
         'TxtStagingWait','TxtPollInterval','TxtMaxRetries','BtnApplySettings',
+        'ChkWhatIf',
         'JobGrid',
         'TxtLog','LogScroller','BtnClearLog',
         'StatusBarLeft','StatusBarRight'
@@ -569,34 +589,77 @@ function Start-BMGui {
     # -------------------------------------------------------------------------
 
     $updateCredsDisplay = {
-        # Regular account
-        if (Test-BMRegularCredentialSet) {
-            $regCred = Get-BMRegularCredential
-            $ctrl['RegCredLabel'].Text       = " Regular: $($regCred.UserName)"
+        $ctx = Get-BMSessionContext
+
+        # -- Header: Regular credential label --------------------------------
+        if ($ctx.IsPrivilegedSession) {
+            if (Test-BMRegularCredentialSet) {
+                $rc = Get-BMRegularCredential
+                $ctrl['RegCredLabel'].Text       = (' Reg: {0}' -f $rc.UserName)
+                $ctrl['RegCredLabel'].Foreground = [System.Windows.Media.Brushes]::LightGreen
+            } else {
+                $ctrl['RegCredLabel'].Text       = ' Reg: REQUIRED (not set)'
+                $ctrl['RegCredLabel'].Foreground = [System.Windows.Media.Brushes]::Salmon
+            }
+        } else {
+            # Regular session - current Windows token IS the regular account
+            $ctrl['RegCredLabel'].Text       = (' Reg: {0} (session)' -f $ctx.FullUser)
             $ctrl['RegCredLabel'].Foreground = [System.Windows.Media.Brushes]::LightGreen
-        } else {
-            $ctrl['RegCredLabel'].Text       = ' Regular: not set'
-            $ctrl['RegCredLabel'].Foreground = [System.Windows.Media.Brushes]::Salmon
         }
-        # Privileged account
-        if (Test-BMPrivilegedInfoSet) {
-            $pInfo = Get-BMPrivilegedInfo
-            $label = if ($pInfo.Method -eq 'EPM') { ' Priv: EPM (auto-elevate)' }
-                     else { " Priv: $($pInfo.Credential.UserName)" }
-            $ctrl['PrivCredLabel'].Text       = $label
-            $ctrl['PrivCredLabel'].Foreground = [System.Windows.Media.Brushes]::LightGreen
-        } else {
-            $ctrl['PrivCredLabel'].Text       = ' Priv: not set'
-            $ctrl['PrivCredLabel'].Foreground = [System.Windows.Media.Brushes]::Goldenrod
+
+        # -- Header: Elevation / privileged label ----------------------------
+        switch ($ctx.ElevationMethod) {
+            'DirectSession' {
+                $ctrl['PrivCredLabel'].Text       = (' Priv: {0} (current session)' -f $ctx.FullUser)
+                $ctrl['PrivCredLabel'].Foreground = [System.Windows.Media.Brushes]::LightGreen
+            }
+            'EPM' {
+                $ctrl['PrivCredLabel'].Text       = ' Priv: CyberArk EPM'
+                $ctrl['PrivCredLabel'].Foreground = [System.Windows.Media.Brushes]::LightGreen
+            }
+            'PrivAccount' {
+                if ($ctx.Blocked) {
+                    $ctrl['PrivCredLabel'].Text       = ' Priv: REQUIRED - relaunch as priv account'
+                    $ctrl['PrivCredLabel'].Foreground = [System.Windows.Media.Brushes]::Salmon
+                } else {
+                    $wif = Get-BMWhatIfMode
+                    $ctrl['PrivCredLabel'].Text       = if ($wif) { ' Priv: WHAT-IF mode active' }
+                                                        else      { ' Priv: not available (DEV)' }
+                    $ctrl['PrivCredLabel'].Foreground = [System.Windows.Media.Brushes]::Goldenrod
+                }
+            }
+            default {
+                $ctrl['PrivCredLabel'].Text       = ' Priv: Detecting...'
+                $ctrl['PrivCredLabel'].Foreground = [System.Windows.Media.Brushes]::Gray
+            }
         }
-        # Summary in left panel
-        $regSet  = Test-BMRegularCredentialSet
-        $privSet = Test-BMPrivilegedInfoSet
-        $ctrl['CredsSummary'].Text = if ($regSet -and $privSet) { '[+] Both credentials ready' }
-                                     elseif ($regSet)           { '[!] Privileged not set (needed for physical machines)' }
-                                     else                       { '[X] Regular credentials required to start' }
+
+        # -- Left panel: summary text ----------------------------------------
+        $regReady  = Test-BMRegularCredentialSet
+        $wifMode   = Get-BMWhatIfMode
+        $elevReady = $ctx.ElevationMethod -in @('DirectSession','EPM') -or $wifMode
+
+        if ($ctx.Blocked) {
+            $ctrl['CredsSummary'].Text       = '[X] Session blocked - see below'
+            $ctrl['CredsSummary'].Foreground = [System.Windows.Media.Brushes]::Salmon
+        } elseif ($ctx.IsPrivilegedSession -and -not $regReady) {
+            $ctrl['CredsSummary'].Text       = '[!] Set regular credentials to enable API calls'
+            $ctrl['CredsSummary'].Foreground = [System.Windows.Media.Brushes]::Goldenrod
+        } elseif ($regReady -and $elevReady) {
+            $sessionType = switch ($ctx.ElevationMethod) {
+                'DirectSession' { 'Privileged session' }
+                'EPM'           { 'Regular + CyberArk EPM' }
+                default         { if ($wifMode) { 'DEV - WhatIf mode' } else { 'DEV - limited' } }
+            }
+            $ctrl['CredsSummary'].Text       = ('[+] Ready  ({0})' -f $sessionType)
+            $ctrl['CredsSummary'].Foreground = [System.Windows.Media.Brushes]::LightGreen
+        } else {
+            $ctrl['CredsSummary'].Text       = '[?] Check configuration'
+            $ctrl['CredsSummary'].Foreground = [System.Windows.Media.Brushes]::Goldenrod
+        }
     }.GetNewClosure()
 
+    # -- Set Regular Account button (only meaningful in privileged sessions) --
     $ctrl['BtnSetRegCred'].Add_Click({
         try {
             Get-BMRegularCredential -Force | Out-Null
@@ -604,19 +667,18 @@ function Start-BMGui {
             Write-BMLog -Message 'Regular credentials updated' -Level Info
         }
         catch {
-            Write-BMLog -Message "Regular credential prompt failed: $($_.Exception.Message)" -Level Error
+            [System.Windows.MessageBox]::Show(
+                $_.Exception.Message, 'Credential Error',
+                [System.Windows.MessageBoxButton]::OK,
+                [System.Windows.MessageBoxImage]::Warning) | Out-Null
+            Write-BMLog -Message ("Regular credential prompt failed: {0}" -f $_.Exception.Message) -Level Error
         }
     }.GetNewClosure())
 
+    # -- Set Privileged Account button is obsolete in the new model -----------
+    # Hidden at load time (see Add_Loaded below); keep stub in case of future use.
     $ctrl['BtnSetPrivCred'].Add_Click({
-        try {
-            Get-BMPrivilegedInfo -Force | Out-Null
-            & $updateCredsDisplay
-            Write-BMLog -Message 'Privileged credential info updated' -Level Info
-        }
-        catch {
-            Write-BMLog -Message "Privileged credential prompt failed: $($_.Exception.Message)" -Level Error
-        }
+        Write-BMLog -Message 'Privileged account is managed via session context - no manual entry required.' -Level Info
     }.GetNewClosure())
 
     # -------------------------------------------------------------------------
@@ -650,10 +712,22 @@ function Start-BMGui {
     # -------------------------------------------------------------------------
 
     $ctrl['BtnStartRebuild'].Add_Click({
-        # Validate regular credentials
+        # -- Session blocked? ------------------------------------------------
+        $sessCtx = Get-BMSessionContext
+        if ($sessCtx.Blocked) {
+            [System.Windows.MessageBox]::Show(
+                $sessCtx.BlockReason,
+                'Session Blocked',
+                [System.Windows.MessageBoxButton]::OK,
+                [System.Windows.MessageBoxImage]::Stop) | Out-Null
+            return
+        }
+
+        # -- Regular credentials required in privileged sessions -------------
         if (-not (Test-BMRegularCredentialSet)) {
             [System.Windows.MessageBox]::Show(
-                'Please set regular account credentials first.',
+                'Please set your regular account credentials first.' + "`n`n" +
+                'These are needed for BuildMaster and VirtualWorks API calls.',
                 'Credentials Required',
                 [System.Windows.MessageBoxButton]::OK,
                 [System.Windows.MessageBoxImage]::Warning) | Out-Null
@@ -769,6 +843,22 @@ function Start-BMGui {
     }.GetNewClosure())
 
     # -------------------------------------------------------------------------
+    #  WHAT-IF MODE CHECKBOX  (DEV only - shown/enabled in Add_Loaded)
+    # -------------------------------------------------------------------------
+
+    $ctrl['ChkWhatIf'].Add_Checked({
+        Set-BMWhatIfMode -Enabled $true
+        & $updateCredsDisplay
+        Write-BMLog -Message '[DEV] What If mode ENABLED - no commands will be sent to machines.' -Level Warning
+    }.GetNewClosure())
+
+    $ctrl['ChkWhatIf'].Add_Unchecked({
+        Set-BMWhatIfMode -Enabled $false
+        & $updateCredsDisplay
+        Write-BMLog -Message '[DEV] What If mode disabled.' -Level Info
+    }.GetNewClosure())
+
+    # -------------------------------------------------------------------------
     #  CLEAR LOG BUTTON
     # -------------------------------------------------------------------------
 
@@ -784,28 +874,35 @@ function Start-BMGui {
     $uiTimer.Interval = [timespan]::FromSeconds(2)
 
     $uiTimer.Add_Tick({
-        # Refresh DataGrid row rendering (picks up property changes + row colors)
-        try { $ctrl['JobGrid'].Items.Refresh() } catch { }
+        try {
+            # Refresh DataGrid row rendering (picks up property changes + row colours)
+            try { $ctrl['JobGrid'].Items.Refresh() } catch { }
 
-        # Status bar - job summary
-        $jobs      = @(Get-BMJobs)
-        $total     = $jobs.Count
-        $scheduled = @($jobs | Where-Object { $_.Status -eq 'Scheduled'  }).Count
-        $active    = @($jobs | Where-Object { $_.Status -notin @('Completed','Failed','Cancelled','Scheduled') }).Count
-        $done      = @($jobs | Where-Object { $_.Status -eq 'Completed'  }).Count
-        $failed    = @($jobs | Where-Object { $_.Status -eq 'Failed'     }).Count
+            # Status bar - job summary
+            $jobs      = @(Get-BMJobs)
+            $total     = $jobs.Count
+            $scheduled = @($jobs | Where-Object { $_.Status -eq 'Scheduled'  }).Count
+            $active    = @($jobs | Where-Object { $_.Status -notin @('Completed','Failed','Cancelled','Scheduled') }).Count
+            $done      = @($jobs | Where-Object { $_.Status -eq 'Completed'  }).Count
+            $failed    = @($jobs | Where-Object { $_.Status -eq 'Failed'     }).Count
 
-        $engineState = if (Test-BMEngineRunning) { '* Engine running' } else { 'o Engine idle' }
-        $ctrl['EngineStatusLabel'].Text = $engineState
+            $engineState = if (Test-BMEngineRunning) { '* Engine running' } else { 'o Engine idle' }
+            $ctrl['EngineStatusLabel'].Text = $engineState
 
-        $ctrl['StatusBarLeft'].Text = if ($total -gt 0) {
-            $sb = "Jobs: $total total  |  $active active  |  $done completed  |  $failed failed"
-            if ($scheduled -gt 0) { $sb += "  |  $scheduled scheduled" }
-            $sb
-        } else {
-            'No jobs queued. Enter machine names and click Start Rebuild.'
+            $ctrl['StatusBarLeft'].Text = if ($total -gt 0) {
+                $sb = ("Jobs: {0} total  |  {1} active  |  {2} completed  |  {3} failed" -f
+                       $total, $active, $done, $failed)
+                if ($scheduled -gt 0) { $sb += ("  |  {0} scheduled" -f $scheduled) }
+                $sb
+            } else {
+                'No jobs queued. Enter machine names and click Start Rebuild.'
+            }
+            $ctrl['StatusBarRight'].Text = ("Environment: {0}  |  {1}" -f $Environment, (Get-Date -Format 'HH:mm:ss'))
         }
-        $ctrl['StatusBarRight'].Text = ("Environment: $Environment  |  {0}" -f (Get-Date -Format 'HH:mm:ss'))
+        catch {
+            # Non-fatal UI refresh error - swallow to prevent crashing ShowDialog
+            try { Write-BMLog -Message ("UI refresh error: {0}" -f $_.Exception.Message) -Level Warning } catch { }
+        }
     }.GetNewClosure())
 
     # -------------------------------------------------------------------------
@@ -813,12 +910,46 @@ function Start-BMGui {
     # -------------------------------------------------------------------------
 
     $window.Add_Loaded({
-        # Initial credential display
+        $ctx = Get-BMSessionContext
+
+        # -- Configure session-specific UI -----------------------------------
+
+        # "Set Privileged Account" button is obsolete in the new auth model
+        $ctrl['BtnSetPrivCred'].Visibility = [System.Windows.Visibility]::Collapsed
+
+        # "Set Regular Account" only needed for privileged sessions
+        if (-not $ctx.IsPrivilegedSession) {
+            $ctrl['BtnSetRegCred'].Visibility = [System.Windows.Visibility]::Collapsed
+        } else {
+            $ctrl['BtnSetRegCred'].Content    = ' Set Regular Account (required)'
+            $ctrl['BtnSetRegCred'].Background = New-Object System.Windows.Media.SolidColorBrush(
+                [System.Windows.Media.ColorConverter]::ConvertFromString('#3A1A00'))
+            $ctrl['BtnSetRegCred'].BorderBrush = New-Object System.Windows.Media.SolidColorBrush(
+                [System.Windows.Media.ColorConverter]::ConvertFromString('#7A4A00'))
+        }
+
+        # Blocked state - show banner, disable rebuild button
+        if ($ctx.Blocked) {
+            $ctrl['BlockedBannerText'].Text   = $ctx.BlockReason
+            $ctrl['BlockedBanner'].Visibility = [System.Windows.Visibility]::Visible
+            $ctrl['BtnStartRebuild'].IsEnabled = $false
+            $ctrl['BtnStartRebuild'].Opacity   = 0.4
+        }
+
+        # What If mode checkbox - DEV only; also show when regular session has
+        # no EPM in any environment (since the checkbox is harmless in DEV)
+        if ($Environment -eq 'dev' -and $ctx.ElevationMethod -eq 'PrivAccount') {
+            $ctrl['ChkWhatIf'].Visibility = [System.Windows.Visibility]::Visible
+            Write-BMLog -Message '[DEV] WhatIf mode checkbox enabled - no EPM or privileged session detected.' -Level Warning
+        }
+
+        # -- Initial credential display & startup log -----------------------
         & $updateCredsDisplay
-        # Start UI refresh timer
         $uiTimer.Start()
-        Write-BMLog -Message "BuildMaster GUI loaded - Environment: $Environment" -Level Info
-        Write-BMLog -Message "Network path: \\FileServer\ITTools\BuildMaster\$Environment\BuildMaster.ps1" -Level Debug
+        Write-BMLog -Message ("BuildMaster GUI loaded - Environment: {0}" -f $Environment) -Level Info
+        Write-BMLog -Message ("Session: {0}  Elevation: {1}  Blocked: {2}" -f `
+                              $ctx.FullUser, $ctx.ElevationMethod, $ctx.Blocked) -Level Info
+        Write-BMLog -Message ("Network path: \\FileServer\ITTools\BuildMaster\{0}\BuildMaster.ps1" -f $Environment) -Level Debug
     }.GetNewClosure())
 
     $window.Add_Closing({
@@ -852,7 +983,31 @@ function Start-BMGui {
     # -------------------------------------------------------------------------
 
     Write-BMLog -Message 'Launching BuildMaster window...' -Level Info
-    $window.ShowDialog() | Out-Null
+    try {
+        $window.ShowDialog() | Out-Null
+    }
+    catch {
+        # A fatal error escaped the WPF dispatcher - show it before the window
+        # can turn into a zombie (dispatcher crash leaves the window visible
+        # with no powershell backing it).
+        $errMsg = $_.Exception.Message
+        try {
+            $uiTimer.Stop()
+            Stop-BMEngine
+        }
+        catch { }
+        try {
+            [System.Windows.MessageBox]::Show(
+                ("A fatal error occurred inside the BuildMaster window:`n`n{0}`n`n" +
+                 "The application will now close.  Check the console for the full stack trace.") -f $errMsg,
+                'BuildMaster - Fatal Error',
+                [System.Windows.MessageBoxButton]::OK,
+                [System.Windows.MessageBoxImage]::Error) | Out-Null
+            $window.Close()
+        }
+        catch { }
+        throw   # re-throw so BuildMaster.ps1 can log/exit cleanly
+    }
 }
 
 # -----------------------------------------------------------------------------

@@ -245,7 +245,12 @@ function Start-BMEngine {
 
     $script:EngineTimer          = New-Object System.Windows.Threading.DispatcherTimer
     $script:EngineTimer.Interval = [timespan]::FromSeconds($script:PollIntervalSeconds)
-    $script:EngineTimer.Add_Tick({ Invoke-BMEngineTick })
+    $script:EngineTimer.Add_Tick({
+        try { Invoke-BMEngineTick }
+        catch {
+            Write-BMLog -Message ("Engine tick unhandled error: {0}" -f $_.Exception.Message) -Level Error
+        }
+    })
     $script:EngineTimer.Start()
 
     Write-BMLog -Message ("Engine started - poll interval: {0}s  staging wait: {1}m" -f
@@ -367,18 +372,18 @@ function Invoke-BMStep_Scheduled {
 function Invoke-BMStep_Stage {
     param([object]$Job)
 
-    $Job.Status    = 'Staging'
-    $Job.Message   = 'Contacting BuildMaster to stage machine...'
+    $Job.Status     = 'Staging'
+    $Job.Message    = 'Contacting BuildMaster to stage machine...'
     $Job.StatusIcon = [char]0x25B6   # (>) staging arrow
 
     try {
-        $regCred = Get-BMRegularCredential
+        $regCred = Get-BMRegularCredential  # $null for regular sessions (SSO)
 
         # Detect VM vs physical if not yet known
         if ($null -eq $Job.IsVM) {
             $Job.Message = 'Detecting machine type (VirtualWorks lookup)...'
             Write-BMLog -MachineName $Job.MachineName -Message 'Checking VirtualWorks for machine type' -Level Debug
-            $Job.IsVM = Test-IsVirtualMachine -ComputerName $Job.MachineName -Credential $regCred
+            $Job.IsVM        = Test-IsVirtualMachine -ComputerName $Job.MachineName -Credential $regCred
             $Job.MachineType = if ($Job.IsVM) { 'VM/DiDC' } else { 'Physical' }
             Write-BMLog -MachineName $Job.MachineName `
                         -Message ("Machine type detected: {0}" -f $Job.MachineType) -Level Info
@@ -390,18 +395,34 @@ function Invoke-BMStep_Stage {
         $Job.StagedAt   = [datetime]::Now
         $Job.Status     = 'StagingWait'
         $Job.StatusIcon = [char]0x23F0  # [alarm]
-        $Job.Message    = "Staged. Waiting $($script:StagingWaitMinutes) min before reboot..."
+        $Job.Message    = ("Staged. Waiting {0} min before reboot..." -f $script:StagingWaitMinutes)
 
         Write-BMLog -MachineName $Job.MachineName `
                     -Message ("Machine staged successfully. Waiting {0} min." -f $script:StagingWaitMinutes) `
                     -Level Info
+
+        # Opportunistically fetch BuildId now so monitoring can skip the computer-name lookup
+        try {
+            $buildData = Get-BMBuildData -ComputerName $Job.MachineName -Credential $regCred
+            if ($null -ne $buildData -and -not [string]::IsNullOrEmpty($buildData.BuildId)) {
+                $Job.BuildId    = $buildData.BuildId
+                $Job.InstanceId = if ($null -ne $buildData.InstanceId) { $buildData.InstanceId } else { '' }
+                Write-BMLog -MachineName $Job.MachineName `
+                            -Message ("BuildId acquired: {0}" -f $Job.BuildId) -Level Debug
+            }
+        }
+        catch {
+            # Non-fatal - BuildId will be fetched on first monitoring tick
+            Write-BMLog -MachineName $Job.MachineName `
+                        -Message ("Could not pre-fetch BuildId: {0}" -f $_.Exception.Message) -Level Debug
+        }
     }
     catch {
-        $Job.LastError = $_.Exception.Message
-        $Job.Message   = "Stage failed: $($_.Exception.Message)"
-        $Job.Status    = 'Error'
+        $Job.LastError  = $_.Exception.Message
+        $Job.Message    = "Stage failed: $($_.Exception.Message)"
+        $Job.Status     = 'Error'
         $Job.StatusIcon = [char]0x26A0
-        Write-BMLog -MachineName $Job.MachineName -Message "Stage API failed: $($_.Exception.Message)" -Level Error
+        Write-BMLog -MachineName $Job.MachineName -Message ("Stage API failed: {0}" -f $_.Exception.Message) -Level Error
         Invoke-BMHandleFailure -Job $Job
     }
 }
@@ -432,22 +453,23 @@ function Invoke-BMStep_StagingWait {
 function Invoke-BMStep_Reboot {
     param([object]$Job)
 
-    $regCred = Get-BMRegularCredential
+    $regCred = Get-BMRegularCredential  # $null for regular sessions (SSO)
 
     try {
         if ($Job.IsVM -eq $true) {
-            # -- DiDC / VM: VirtualWorks API (regular account) --------------
+            # -- DiDC / VM: VirtualWorks API reboot (regular/SSO credentials) --
             Write-BMLog -MachineName $Job.MachineName -Message 'Rebooting via VirtualWorks API' -Level Info
             Invoke-VWReboot -ComputerName $Job.MachineName -Credential $regCred | Out-Null
         }
         else {
-            # -- Physical: privileged account -------------------------------
-            $privInfo = Get-BMPrivilegedInfo
+            # -- Physical: requires elevation (direct priv session or EPM) ----
+            $ctx = Get-BMSessionContext
             Write-BMLog -MachineName $Job.MachineName `
-                        -Message ("Rebooting physical machine via privileged account [Method: {0}]" -f $privInfo.Method) `
+                        -Message ("Rebooting physical machine [Session: {0}  Elevation: {1}]" -f `
+                                  $ctx.FullUser, $ctx.ElevationMethod) `
                         -Level Info
 
-            Invoke-BMPrivilegedCommand -TargetComputer $Job.MachineName -PrivInfo $privInfo -ScriptBlock {
+            Invoke-BMPrivilegedCommand -TargetComputer $Job.MachineName -ScriptBlock {
                 Restart-Computer -Force -ErrorAction Stop
             }
         }
@@ -479,73 +501,86 @@ function Invoke-BMStep_Monitor {
         $elapsed = [datetime]::Now - $Job.StageEnteredAt
         $limit   = $script:StageTimeouts[$Job.BuildStage]
         if ($elapsed -gt $limit) {
-            $msg = "Timeout in stage '{0}' ({1:mm\:ss} elapsed, limit {2:mm\:ss})" -f
-                   $Job.BuildStage, $elapsed, $limit
+            $msg = ("Timeout in stage '{0}' ({1:hh\:mm\:ss} elapsed, limit {2:hh\:mm\:ss})" -f
+                    $Job.BuildStage, $elapsed, $limit)
             Write-BMLog -MachineName $Job.MachineName -Message $msg -Level Warning
-            $Job.LastError = $msg
-            $Job.Status    = 'Error'
+            $Job.LastError  = $msg
+            $Job.Status     = 'Error'
             $Job.StatusIcon = [char]0x23F1  # [timer]
             Invoke-BMHandleFailure -Job $Job
             return
         }
     }
 
-    # -- Poll BuildMaster -----------------------------------------------------
+    # -- Poll BuildMaster (two-step: get BuildId first, then instance) --------
     try {
-        $regCred   = Get-BMRegularCredential
-        $buildData = Get-BMBuildData -ComputerName $Job.MachineName -Credential $regCred
+        $regCred = Get-BMRegularCredential   # $null for regular sessions (SSO)
 
-        # Store IDs from first successful response
-        if ([string]::IsNullOrEmpty($Job.BuildId) -and $null -ne $buildData.BuildId) {
-            $Job.BuildId    = $buildData.BuildId
-            $Job.InstanceId = $buildData.InstanceId
-        }
+        # Step 1: If we don't have the BuildId yet, query by computer name
+        if ([string]::IsNullOrEmpty($Job.BuildId)) {
+            $Job.Message = 'Waiting for BuildMaster build record...'
+            $buildRef = Get-BMBuildData -ComputerName $Job.MachineName -Credential $regCred
 
-        $newStage = Get-BMCurrentStage -BuildData $buildData
+            if ($null -eq $buildRef -or [string]::IsNullOrEmpty($buildRef.BuildId)) {
+                # Build record not available yet; machine may still be rebooting
+                $Job.Message = 'Monitoring - build record not yet available...'
+                return
+            }
 
-        # -- Advance state on stage transitions ---------------------------
-        if ($newStage -ne $Job.BuildStage -and $newStage -ne 'Unknown') {
-            $prev = $Job.BuildStage
-            $Job.BuildStage     = $newStage
-            $Job.StageEnteredAt = Get-BMStageEntryTime -BuildData $buildData -Stage $newStage
+            $Job.BuildId    = $buildRef.BuildId
+            $Job.InstanceId = if ($null -ne $buildRef.InstanceId) { $buildRef.InstanceId } else { '' }
 
             Write-BMLog -MachineName $Job.MachineName `
-                        -Message ("Stage advanced: {0}  {1}" -f $prev, $newStage) `
+                        -Message ("BuildId acquired during monitoring: {0}" -f $Job.BuildId) -Level Debug
+        }
+
+        # Step 2: Get instance data using the BuildId
+        $instanceData = Get-BMBuildInstance -BuildId $Job.BuildId -Credential $regCred
+        $newStage     = Get-BMCurrentStage -BuildData $instanceData
+
+        # -- Advance state on stage transition --------------------------------
+        if ($newStage -ne $Job.BuildStage -and $newStage -ne 'Unknown') {
+            $prev               = $Job.BuildStage
+            $Job.BuildStage     = $newStage
+            $Job.StageEnteredAt = Get-BMStageEntryTime -BuildData $instanceData -Stage $newStage
+
+            Write-BMLog -MachineName $Job.MachineName `
+                        -Message ("Stage advanced: {0} -> {1}" -f $prev, $newStage) `
                         -Level Info
         }
 
-        # -- Terminal state ------------------------------------------------
+        # -- Terminal / display state -----------------------------------------
         switch ($newStage) {
             'Completed' {
-                $Job.Status       = 'Completed'
-                $Job.CompletedAt  = [datetime]::Now
-                $Job.StatusIcon   = [char]0x2705  # [OK]
-                $Job.Message      = 'Build completed successfully!'
+                $Job.Status      = 'Completed'
+                $Job.CompletedAt = [datetime]::Now
+                $Job.StatusIcon  = [char]0x2705   # [OK]
+                $Job.Message     = 'Build completed successfully!'
                 Write-BMLog -MachineName $Job.MachineName -Message 'BUILD COMPLETED [+]' -Level Info
                 return
             }
             'OSComplete' {
                 $Job.Message    = 'OS complete - applying post-build configuration...'
-                $Job.StatusIcon = [char]0x25A0   # (#) black square - OS complete
+                $Job.StatusIcon = [char]0x25A0    # black square
             }
             'Started' {
                 $Job.Message    = 'Build started - OS installing...'
-                $Job.StatusIcon = [char]0x25B2   # (^) triangle up - build started
+                $Job.StatusIcon = [char]0x25B2    # triangle up
             }
             'Staged' {
                 $Job.Message    = 'Machine staged - waiting for build to start...'
-                $Job.StatusIcon = [char]0x25CB   # (o) white circle - staged
+                $Job.StatusIcon = [char]0x25CB    # white circle
             }
             default {
-                $Job.Message = "Monitoring... (last seen: $newStage)"
+                $Job.Message = ("Monitoring... (last stage seen: {0})" -f $newStage)
             }
         }
     }
     catch {
         # Non-fatal: machine may still be rebooting; log and continue
-        $Job.Message = "Poll error (will retry): $($_.Exception.Message)"
+        $Job.Message = ("Poll error (will retry): {0}" -f $_.Exception.Message)
         Write-BMLog -MachineName $Job.MachineName `
-                    -Message "BuildMaster poll error (non-fatal): $($_.Exception.Message)" `
+                    -Message ("BuildMaster poll error (non-fatal): {0}" -f $_.Exception.Message) `
                     -Level Warning
     }
 }

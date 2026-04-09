@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+#Requires -Version 5.1
 <#
 .SYNOPSIS
     BM-API - API wrapper module for BuildMaster and VirtualWorks
@@ -6,32 +6,37 @@
     All outbound HTTP calls live here. No external modules - uses only
     the built-in Invoke-RestMethod (PS 5.1 / .NET 4.x).
 
-    BuildMaster API  : http://bm.zz.com/new-api/v1
+    BuildMaster API  : http://bm.zz.com/new-api
     VirtualWorks API : http://vw.zz.com/vwapi/Desktop
 
-    BuildMaster JSON shape (from real sample):
+    ENDPOINT MAP:
+        Stage machine    : POST  /v1/machinebuild/StageMachineByName
+        Get build by PC  : GET   /v1/machinebuild?computerName=<name>   (to get BuildId only)
+        Get build inst.  : GET   /v1/machinebuild/instance/<BuildId>    (for BuildTimes / stage)
+
+        VW desktop check : GET   /Desktops?hostnames=<FQDN>
+                           Response: .Results[].DesktopType
+                               "VM" | "Moonshot" -> virtual/DiDC (use VW reboot)
+                               "Non-DiDC" | no results -> physical (use privileged reboot)
+        VW reboot        : POST  /Desktops   body: { "Id": "<FQDN>" }
+
+    CREDENTIAL PASSING:
+        Passing a [PSCredential] -> Invoke-RestMethod -Credential
+        Passing $null            -> Invoke-RestMethod -UseDefaultCredentials (Windows SSO)
+        Regular sessions use SSO. Privileged sessions pass an explicit credential.
+
+    BuildMaster instance JSON shape (from real sample):
     {
-      "BuildId"          : "guid",
-      "InstanceId"       : "guid",
+      "BuildId"          : "251637f8-...",
+      "InstanceId"       : "63a9f946-...",
       "ComputerName"     : "MACHINENAME",
-      "Settings"         : 0,
-      "InstanceSettings" : 2097168,
       "BuildTimes"       : [
-        {
-          "Id"               : "guid",
-          "BuildId"          : "guid",
-          "Message"          : "Build has completed",
-          "Settings"         : 2097152,
-          "BuildTime"        : "2026-03-23T23:34:49Z",
-          "IsStagedTime"     : false,
-          "IsStartedTime"    : false,
-          "IsOSCompletedTime": false,
-          "IsCompletedTime"  : true
-        },
-        ...
+        { "BuildTime":"2026-03-23T23:34:49Z", "IsCompletedTime":true,  ... },
+        { "BuildTime":"2026-03-23T18:28:32Z", "IsOSCompletedTime":true,...},
+        { "BuildTime":"2026-03-23T17:59:50Z", "IsStartedTime":true,    ...},
+        { "BuildTime":"2026-03-23T13:40:19Z", "IsStagedTime":true,     ...}
       ],
-      "CreatedBy" : "username",
-      "CreatedOn" : "2026-03-23T13:40:19Z"
+      "CreatedBy":"...", "CreatedOn":"..."
     }
 #>
 
@@ -39,21 +44,24 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 # -- Base URLs -----------------------------------------------------------------
-$script:BMBaseUrl = 'http://bm.zz.com/new-api/v1'
+$script:BMBaseUrl = 'http://bm.zz.com/new-api'
 $script:VWBaseUrl = 'http://vw.zz.com/vwapi/Desktop'
 
 # -----------------------------------------------------------------------------
-#  INTERNAL HELPER
+#  INTERNAL REST HELPER
 # -----------------------------------------------------------------------------
 
 function Invoke-BMRestCall {
     <#
-    .SYNOPSIS  Internal REST helper - wraps Invoke-RestMethod with PS 5.1 error handling.
+    .SYNOPSIS  Internal REST helper with PS 5.1 error handling.
+    .DESCRIPTION
+        Pass a PSCredential for explicit auth.
+        Pass $null to use -UseDefaultCredentials (Windows SSO for regular sessions).
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Uri,
-        [string]$Method = 'GET',
+        [string]$Method   = 'GET',
         [object]$Body,
         [System.Management.Automation.PSCredential]$Credential
     )
@@ -66,8 +74,15 @@ function Invoke-BMRestCall {
         ErrorAction     = 'Stop'
     }
 
-    if ($null -ne $Body)       { $params.Body       = ($Body | ConvertTo-Json -Depth 10 -Compress) }
-    if ($null -ne $Credential) { $params.Credential = $Credential }
+    if ($null -ne $Body)       { $params.Body = ($Body | ConvertTo-Json -Depth 10 -Compress) }
+
+    if ($null -ne $Credential) {
+        $params.Credential = $Credential
+    }
+    else {
+        # $null credential -> use the current Windows session token (SSO / Kerberos / NTLM)
+        $params.UseDefaultCredentials = $true
+    }
 
     try {
         return Invoke-RestMethod @params
@@ -76,56 +91,27 @@ function Invoke-BMRestCall {
         $resp       = $_.Exception.Response
         $statusCode = if ($null -ne $resp) { [int]$resp.StatusCode } else { 0 }
 
-        $errorBody  = ''
+        $errorBody = ''
         if ($null -ne $resp) {
             try {
-                $stream = $resp.GetResponseStream()
-                $reader = New-Object System.IO.StreamReader($stream)
+                $stream    = $resp.GetResponseStream()
+                $reader    = New-Object System.IO.StreamReader($stream)
                 $errorBody = $reader.ReadToEnd()
                 $reader.Dispose()
-            } catch { }
+            }
+            catch { }
         }
 
-        throw "API Error [$Method $Uri] HTTP $statusCode - $errorBody".Trim()
+        throw ('API Error [{0} {1}] HTTP {2} - {3}' -f $Method, $Uri, $statusCode, $errorBody).TrimEnd()
     }
     catch {
-        throw "API Error [$Method $Uri] - $($_.Exception.Message)"
+        throw ('API Error [{0} {1}] - {2}' -f $Method, $Uri, $_.Exception.Message)
     }
 }
 
 # -----------------------------------------------------------------------------
-#  BUILDMASTER - BUILD DATA
+#  BUILDMASTER - STAGING
 # -----------------------------------------------------------------------------
-
-function Get-BMBuildData {
-    <#
-    .SYNOPSIS
-        Queries BuildMaster for the current build record of a machine.
-        Returns the full object including the BuildTimes array.
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$ComputerName,
-        [System.Management.Automation.PSCredential]$Credential
-    )
-    $uri = ('{0}/build?computer={1}' -f $script:BMBaseUrl, [Uri]::EscapeDataString($ComputerName))
-    return Invoke-BMRestCall -Uri $uri -Method GET -Credential $Credential
-}
-
-function Get-BMLastBuildInstance {
-    <#
-    .SYNOPSIS
-        Returns the most recent build instance record for a machine.
-        Used as the "second scriptblock" query described in the requirements.
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$ComputerName,
-        [System.Management.Automation.PSCredential]$Credential
-    )
-    $uri = ('{0}/build/instance/last?computer={1}' -f $script:BMBaseUrl, [Uri]::EscapeDataString($ComputerName))
-    return Invoke-BMRestCall -Uri $uri -Method GET -Credential $Credential
-}
 
 function Invoke-BMStage {
     <#
@@ -136,9 +122,54 @@ function Invoke-BMStage {
         [Parameter(Mandatory)][string]$ComputerName,
         [System.Management.Automation.PSCredential]$Credential
     )
-    $uri  = ('{0}/stage' -f $script:BMBaseUrl)
+    $uri  = ('{0}/v1/machinebuild/StageMachineByName' -f $script:BMBaseUrl)
     $body = @{ ComputerName = $ComputerName }
     return Invoke-BMRestCall -Uri $uri -Method POST -Body $body -Credential $Credential
+}
+
+# -----------------------------------------------------------------------------
+#  BUILDMASTER - BUILD DATA (used only to retrieve BuildId)
+# -----------------------------------------------------------------------------
+
+function Get-BMBuildData {
+    <#
+    .SYNOPSIS
+        Queries BuildMaster for a machine's build record.
+        Use this ONLY to obtain the BuildId - then use Get-BMBuildInstance
+        for all subsequent status polling (see notes in module header).
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [System.Management.Automation.PSCredential]$Credential
+    )
+    $uri = ('{0}/v1/machinebuild?computerName={1}' -f
+            $script:BMBaseUrl, [Uri]::EscapeDataString($ComputerName))
+    return Invoke-BMRestCall -Uri $uri -Method GET -Credential $Credential
+}
+
+# -----------------------------------------------------------------------------
+#  BUILDMASTER - BUILD INSTANCE (used for all stage monitoring)
+# -----------------------------------------------------------------------------
+
+function Get-BMBuildInstance {
+    <#
+    .SYNOPSIS
+        Returns the build instance record for the given BuildId.
+        This is the primary polling call during monitoring - the returned
+        object contains the BuildTimes array used to determine build stage.
+    .NOTES
+        TODO: Confirm exact URI path for the build instance endpoint.
+              Current assumption: /v1/machinebuild/instance/{BuildId}
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$BuildId,
+        [System.Management.Automation.PSCredential]$Credential
+    )
+    $uri = ('{0}/v1/machinebuild/instance/{1}' -f
+            $script:BMBaseUrl, [Uri]::EscapeDataString($BuildId))
+    return Invoke-BMRestCall -Uri $uri -Method GET -Credential $Credential
 }
 
 # -----------------------------------------------------------------------------
@@ -148,11 +179,11 @@ function Invoke-BMStage {
 function Get-BMCurrentStage {
     <#
     .SYNOPSIS
-        Parses a BuildData object and returns the current stage name string.
+        Parses a BuildData / BuildInstance object and returns the current stage.
     .OUTPUTS  'Staged' | 'Started' | 'OSComplete' | 'Completed' | 'Unknown'
     .DESCRIPTION
-        Inspects BuildTimes sorted descending by BuildTime.
-        Priority (highest wins): Completed  OSComplete  Started  Staged.
+        Inspects BuildTimes sorted newest-first.
+        Priority (highest wins): Completed > OSComplete > Started > Staged.
     #>
     [CmdletBinding()]
     [OutputType([string])]
@@ -160,14 +191,13 @@ function Get-BMCurrentStage {
 
     if ($null -eq $BuildData -or $null -eq $BuildData.BuildTimes) { return 'Unknown' }
 
-    $sorted = @($BuildData.BuildTimes) |
-              Sort-Object { [datetime]$_.BuildTime } -Descending
+    $sorted = @($BuildData.BuildTimes) | Sort-Object { [datetime]$_.BuildTime } -Descending
 
     foreach ($entry in $sorted) {
-        if ($entry.IsCompletedTime    -eq $true) { return 'Completed'  }
-        if ($entry.IsOSCompletedTime  -eq $true) { return 'OSComplete' }
-        if ($entry.IsStartedTime      -eq $true) { return 'Started'    }
-        if ($entry.IsStagedTime       -eq $true) { return 'Staged'     }
+        if ($entry.IsCompletedTime   -eq $true) { return 'Completed'  }
+        if ($entry.IsOSCompletedTime -eq $true) { return 'OSComplete' }
+        if ($entry.IsStartedTime     -eq $true) { return 'Started'    }
+        if ($entry.IsStagedTime      -eq $true) { return 'Staged'     }
     }
     return 'Unknown'
 }
@@ -193,10 +223,10 @@ function Get-BMStageEntryTime {
         'OSComplete' = 'IsOSCompletedTime'
         'Completed'  = 'IsCompletedTime'
     }
-    $flagName = $flagMap[$Stage]
+    $flag = $flagMap[$Stage]
 
     $match = @($BuildData.BuildTimes) |
-             Where-Object { $_.$flagName -eq $true } |
+             Where-Object { $_.$flag -eq $true } |
              Sort-Object  { [datetime]$_.BuildTime } |
              Select-Object -First 1
 
@@ -205,14 +235,21 @@ function Get-BMStageEntryTime {
 }
 
 # -----------------------------------------------------------------------------
-#  VIRTUALWORKS
+#  VIRTUALWORKS - VM / DiDC DETECTION
 # -----------------------------------------------------------------------------
 
-function Get-VWDesktop {
+function Get-VWDesktopInfo {
     <#
     .SYNOPSIS
-        Queries VirtualWorks for a desktop VM record.
-        Returns $null (not an error) when the machine is not found (HTTP 404).
+        Queries VirtualWorks for desktop type info by FQDN/hostname.
+        Returns the response object (check .Results.DesktopType) or $null
+        when the machine is not found in VirtualWorks (HTTP 404 / empty results).
+    .DESCRIPTION
+        DesktopType values:
+            "VM"       -> Virtual machine  (use VW API reboot)
+            "Moonshot" -> DiDC / Moonshot   (use VW API reboot)
+            "Non-DiDC" -> Physical machine  (use privileged reboot)
+            (no results) -> Physical machine (not a VW-managed machine)
     #>
     [CmdletBinding()]
     param(
@@ -220,7 +257,7 @@ function Get-VWDesktop {
         [System.Management.Automation.PSCredential]$Credential
     )
     try {
-        $uri = ('{0}/{1}' -f $script:VWBaseUrl, [Uri]::EscapeDataString($ComputerName))
+        $uri = ('{0}/Desktops?hostnames={1}' -f $script:VWBaseUrl, [Uri]::EscapeDataString($ComputerName))
         return Invoke-BMRestCall -Uri $uri -Method GET -Credential $Credential
     }
     catch {
@@ -229,22 +266,11 @@ function Get-VWDesktop {
     }
 }
 
-function Invoke-VWReboot {
-    <#
-    .SYNOPSIS  Sends a reboot command for a DiDC / VM through VirtualWorks.
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$ComputerName,
-        [System.Management.Automation.PSCredential]$Credential
-    )
-    $uri = ('{0}/{1}/reboot' -f $script:VWBaseUrl, [Uri]::EscapeDataString($ComputerName))
-    return Invoke-BMRestCall -Uri $uri -Method POST -Credential $Credential
-}
-
 function Test-IsVirtualMachine {
     <#
-    .SYNOPSIS  Returns $true if the machine exists in VirtualWorks (DiDC / VM).
+    .SYNOPSIS
+        Returns $true if VirtualWorks reports this machine as a VM or DiDC.
+        Returns $false for physical machines or machines not in VirtualWorks.
     #>
     [CmdletBinding()]
     [OutputType([bool])]
@@ -252,20 +278,51 @@ function Test-IsVirtualMachine {
         [Parameter(Mandatory)][string]$ComputerName,
         [System.Management.Automation.PSCredential]$Credential
     )
-    $record = Get-VWDesktop -ComputerName $ComputerName -Credential $Credential
-    return ($null -ne $record)
+
+    $info = Get-VWDesktopInfo -ComputerName $ComputerName -Credential $Credential
+
+    if ($null -eq $info) { return $false }
+
+    # Results may be an array or a single object depending on the API version
+    $results = if ($null -ne $info.Results) { @($info.Results) } else { @() }
+
+    if ($results.Count -eq 0) { return $false }
+
+    $desktopType = $results[0].DesktopType
+    return ($desktopType -in @('VM', 'Moonshot'))
+}
+
+# -----------------------------------------------------------------------------
+#  VIRTUALWORKS - REBOOT
+# -----------------------------------------------------------------------------
+
+function Invoke-VWReboot {
+    <#
+    .SYNOPSIS  Sends a reboot command for a VM / DiDC through VirtualWorks.
+    .DESCRIPTION
+        POSTs to /Desktops with body { "Id": "<ComputerName>" }.
+        Use only for machines where Test-IsVirtualMachine returns $true.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [System.Management.Automation.PSCredential]$Credential
+    )
+    $uri  = ('{0}/Desktops' -f $script:VWBaseUrl)
+    $body = @{ Id = $ComputerName }
+    return Invoke-BMRestCall -Uri $uri -Method POST -Body $body -Credential $Credential
 }
 
 # -----------------------------------------------------------------------------
 #  EXPORTS
 # -----------------------------------------------------------------------------
 Export-ModuleMember -Function @(
-    'Get-BMBuildData',
-    'Get-BMLastBuildInstance',
     'Invoke-BMStage',
+    'Get-BMBuildData',
+    'Get-BMBuildInstance',
     'Get-BMCurrentStage',
     'Get-BMStageEntryTime',
-    'Get-VWDesktop',
-    'Invoke-VWReboot',
-    'Test-IsVirtualMachine'
+    'Get-VWDesktopInfo',
+    'Test-IsVirtualMachine',
+    'Invoke-VWReboot'
 )

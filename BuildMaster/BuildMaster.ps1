@@ -72,8 +72,37 @@ foreach ($mod in $moduleOrder) {
 }
 
 # -----------------------------------------------------------------------------
-#  LAUNCH GUI
+#  SESSION CONTEXT DETECTION
+#  (must run after WPF assemblies are loaded so MessageBox is available,
+#   and after modules are imported so auth functions exist)
 # -----------------------------------------------------------------------------
 Set-BMLogPath -Path $script:LogPath
 
-Start-BMGui -Environment $script:BMEnvironment -LogPath $script:LogPath
+try {
+    Initialize-BMSessionContext -Environment $script:BMEnvironment | Out-Null
+}
+catch {
+    # Context detection failure is non-fatal - GUI will surface the issue
+    Write-Warning ("Session context detection error: {0}" -f $_.Exception.Message)
+}
+
+# -----------------------------------------------------------------------------
+#  LAUNCH GUI
+# -----------------------------------------------------------------------------
+try {
+    Start-BMGui -Environment $script:BMEnvironment -LogPath $script:LogPath
+}
+catch {
+    # Fatal error that escaped the GUI's own try/catch (e.g. XAML load failure)
+    $errMsg = $_.Exception.Message
+    try {
+        [System.Windows.MessageBox]::Show(
+            ("BuildMaster encountered a fatal error and cannot continue:`n`n{0}`n`n" +
+             "Check the console window for the full error details.") -f $errMsg,
+            'BuildMaster - Fatal Error',
+            [System.Windows.MessageBoxButton]::OK,
+            [System.Windows.MessageBoxImage]::Error) | Out-Null
+    }
+    catch { }
+    Write-Error $errMsg
+}
