@@ -593,7 +593,7 @@ function Start-BMGui {
         param([string]$line)
         $logCtrl.AppendText($line + "`n")
         $logScroll.ScrollToBottom()
-    }
+    }.GetNewClosure()
 
     # -- Bind ObservableCollection to DataGrid ---------------------------------
     # Must use Get-BMJobCollection, NOT Get-BMJobs.
@@ -615,6 +615,7 @@ function Start-BMGui {
     $ctrl['JobGrid'].Add_PreviewMouseLeftButtonUp({
         param($s, $e)
         # Walk up the visual tree to find a Button
+        $machineName = $null   # pre-initialise for Set-StrictMode -Version Latest
         $el = $e.OriginalSource
         $maxDepth = 10
         while ($null -ne $el -and $maxDepth-- -gt 0) {
@@ -637,7 +638,7 @@ function Start-BMGui {
             }
             $el = [System.Windows.Media.VisualTreeHelper]::GetParent($el)
         }
-    })
+    }.GetNewClosure())
 
     # -------------------------------------------------------------------------
     #  CREDENTIAL BUTTONS
