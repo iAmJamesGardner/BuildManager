@@ -168,15 +168,49 @@ function Invoke-BMRestCall {
 function Invoke-BMStage {
     <#
     .SYNOPSIS  Submits a staging request for a machine to BuildMaster.
+    .OUTPUTS   [pscustomobject] with:
+                 AlreadyStarted [bool]  - $true when the API indicates the build
+                                          is already in progress (HTTP 2xx body or
+                                          HTTP 4xx/5xx error body both containing
+                                          "already started").
+                 Raw            [object] - the raw API response object, or $null
+                                          when the result came from an error path.
+    .NOTES
+        The BuildMaster StageByMachine endpoint may return:
+          HTTP 2xx  { "Message": "The build of the machine has already started. Machine id: <GUID>" }
+          HTTP 4xx  body containing the same phrase
+        Both cases are treated as a successful stage so the job can proceed
+        through the normal StagingWait → Reboot → Monitor flow.
     #>
     [CmdletBinding()]
+    [OutputType([pscustomobject])]
     param(
         [Parameter(Mandatory)][string]$ComputerName,
         [System.Management.Automation.PSCredential]$Credential
     )
     $uri  = ('{0}/v1/machinebuild/StageMachineByName' -f $script:BMBaseUrl)
     $body = @{ ComputerName = (Get-BMHostname -ComputerName $ComputerName) }
-    return Invoke-BMRestCall -Uri $uri -Method POST -Body $body -Credential $Credential
+
+    try {
+        $response = Invoke-BMRestCall -Uri $uri -Method POST -Body $body -Credential $Credential
+
+        # HTTP 2xx success path — check whether the body itself says "already started"
+        $alreadyStarted = (
+            $null -ne $response -and
+            -not [string]::IsNullOrWhiteSpace($response.Message) -and
+            $response.Message -match 'already started'
+        )
+        return [pscustomobject]@{ AlreadyStarted = $alreadyStarted; Raw = $response }
+    }
+    catch {
+        # Some BuildMaster versions return a 4xx/5xx for "already in progress".
+        # Detect the phrase and promote it to a clean success so the job continues.
+        if ($_.Exception.Message -match 'already started') {
+            return [pscustomobject]@{ AlreadyStarted = $true; Raw = $null }
+        }
+        # Genuine failure — re-throw for the engine to handle
+        throw
+    }
 }
 
 # -----------------------------------------------------------------------------

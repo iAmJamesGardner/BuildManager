@@ -490,16 +490,25 @@ function Invoke-BMStep_Stage {
         }
 
         # Issue stage request
-        Invoke-BMStage -ComputerName $Job.MachineName -Credential $regCred | Out-Null
+        $stageResult = Invoke-BMStage -ComputerName $Job.MachineName -Credential $regCred
 
         $Job.StagedAt   = [datetime]::Now
         $Job.Status     = 'StagingWait'
         $Job.StatusIcon = [char]0x23F0  # [alarm]
-        $Job.Message    = ("Staged. Waiting {0} min before reboot..." -f $script:StagingWaitMinutes)
 
-        Write-BMLog -MachineName $Job.MachineName `
-                    -Message ("Machine staged successfully. Waiting {0} min." -f $script:StagingWaitMinutes) `
-                    -Level Info
+        if ($stageResult.AlreadyStarted) {
+            # API reported the build was already in progress - treat as staged and continue
+            $Job.Message = ("Build already in progress. Waiting {0} min before reboot..." -f $script:StagingWaitMinutes)
+            Write-BMLog -MachineName $Job.MachineName `
+                        -Message ("BuildMaster: build already started - treating as staged. Waiting {0} min." -f $script:StagingWaitMinutes) `
+                        -Level Warning
+        }
+        else {
+            $Job.Message = ("Staged. Waiting {0} min before reboot..." -f $script:StagingWaitMinutes)
+            Write-BMLog -MachineName $Job.MachineName `
+                        -Message ("Machine staged successfully. Waiting {0} min." -f $script:StagingWaitMinutes) `
+                        -Level Info
+        }
 
         # Opportunistically fetch BuildId now so monitoring can skip the computer-name lookup
         try {
