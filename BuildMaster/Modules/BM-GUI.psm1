@@ -596,7 +596,11 @@ function Start-BMGui {
     }
 
     # -- Bind ObservableCollection to DataGrid ---------------------------------
-    $ctrl['JobGrid'].ItemsSource = Get-BMJobs
+    # Must use Get-BMJobCollection, NOT Get-BMJobs.
+    # Get-BMJobs returns enumerated items (or $null for empty); Get-BMJobCollection
+    # returns the live ObservableCollection reference so the DataGrid receives
+    # CollectionChanged events when jobs are added/removed.
+    $ctrl['JobGrid'].ItemsSource = Get-BMJobCollection
 
     # -- Row coloring on load/refresh ------------------------------------------
     $ctrl['JobGrid'].Add_LoadingRow({

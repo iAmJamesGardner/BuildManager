@@ -209,7 +209,26 @@ function Get-BMJob {
     return @($script:Jobs)
 }
 
-function Get-BMJobs { return $script:Jobs }
+function Get-BMJobs {
+    # Returns job objects as an enumerable sequence (for filtering, counting, piping).
+    # Do NOT use this for WPF ItemsSource - use Get-BMJobCollection instead.
+    $script:Jobs
+}
+
+function Get-BMJobCollection {
+    # Returns the ObservableCollection[Object] reference itself, NOT its contents.
+    #
+    # PowerShell enumerates IEnumerable objects when they pass through the output
+    # pipeline, so  $ctrl.ItemsSource = Get-BMJobs  sets ItemsSource to $null
+    # (empty collection) or a plain object[] (non-empty) — neither fires
+    # CollectionChanged when items are later added.
+    #
+    # The leading comma operator wraps $script:Jobs in a 1-element array.
+    # The pipeline enumerates that wrapper array (yielding the collection object),
+    # but does NOT recurse into the collection itself, so the caller receives the
+    # live ObservableCollection reference.
+    ,$script:Jobs
+}
 
 function Clear-BMCompletedJobs {
     $toRemove = @($script:Jobs | Where-Object { $_.Status -in @('Completed','Failed','Cancelled') })
@@ -735,6 +754,7 @@ Export-ModuleMember -Function @(
     'Remove-BMJob',
     'Get-BMJob',
     'Get-BMJobs',
+    'Get-BMJobCollection',
     'Clear-BMCompletedJobs',
     # Engine
     'Start-BMEngine',
