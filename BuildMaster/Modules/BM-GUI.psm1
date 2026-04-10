@@ -733,16 +733,50 @@ function Start-BMGui {
     }.GetNewClosure())
 
     # -------------------------------------------------------------------------
+    #  START / STOP BUTTON MODE HELPERS
+    #  Call  & $setStartMode  or  & $setStopMode  from any handler.
+    # -------------------------------------------------------------------------
+
+    $setStartMode = {
+        $ctrl['BtnStartRebuild'].Tag = 'start'
+        if ($ctrl['ChkSchedule'].IsChecked -eq $true) {
+            $ctrl['BtnStartRebuild'].Content     = '>  Schedule Rebuild'
+            $ctrl['BtnStartRebuild'].Background  = New-Object System.Windows.Media.SolidColorBrush(
+                [System.Windows.Media.ColorConverter]::ConvertFromString('#1A3A6E'))
+            $ctrl['BtnStartRebuild'].BorderBrush = New-Object System.Windows.Media.SolidColorBrush(
+                [System.Windows.Media.ColorConverter]::ConvertFromString('#2E5FAE'))
+        } else {
+            $ctrl['BtnStartRebuild'].Content     = '>  Start Rebuild'
+            $ctrl['BtnStartRebuild'].Background  = New-Object System.Windows.Media.SolidColorBrush(
+                [System.Windows.Media.ColorConverter]::ConvertFromString('#1B5E20'))
+            $ctrl['BtnStartRebuild'].BorderBrush = New-Object System.Windows.Media.SolidColorBrush(
+                [System.Windows.Media.ColorConverter]::ConvertFromString('#388E3C'))
+        }
+    }.GetNewClosure()
+
+    $setStopMode = {
+        $ctrl['BtnStartRebuild'].Tag         = 'stop'
+        $ctrl['BtnStartRebuild'].Content     = ([char]0x25A0 + '  Stop All Builds')
+        $ctrl['BtnStartRebuild'].Background  = New-Object System.Windows.Media.SolidColorBrush(
+            [System.Windows.Media.ColorConverter]::ConvertFromString('#7F0000'))
+        $ctrl['BtnStartRebuild'].BorderBrush = New-Object System.Windows.Media.SolidColorBrush(
+            [System.Windows.Media.ColorConverter]::ConvertFromString('#B71C1C'))
+    }.GetNewClosure()
+
+    # -------------------------------------------------------------------------
     #  SCHEDULE TOGGLE  (show/hide date+time picker, relabel Start button)
     # -------------------------------------------------------------------------
 
     $ctrl['ChkSchedule'].Add_Checked({
-        $ctrl['SchedulePanel'].Visibility    = [System.Windows.Visibility]::Visible
-        $ctrl['BtnStartRebuild'].Content     = '>  Schedule Rebuild'
-        $ctrl['BtnStartRebuild'].Background  = New-Object System.Windows.Media.SolidColorBrush(
-            [System.Windows.Media.ColorConverter]::ConvertFromString('#1A3A6E'))
-        $ctrl['BtnStartRebuild'].BorderBrush = New-Object System.Windows.Media.SolidColorBrush(
-            [System.Windows.Media.ColorConverter]::ConvertFromString('#2E5FAE'))
+        $ctrl['SchedulePanel'].Visibility = [System.Windows.Visibility]::Visible
+        # Only relabel the button when not in stop mode
+        if ($ctrl['BtnStartRebuild'].Tag -ne 'stop') {
+            $ctrl['BtnStartRebuild'].Content     = '>  Schedule Rebuild'
+            $ctrl['BtnStartRebuild'].Background  = New-Object System.Windows.Media.SolidColorBrush(
+                [System.Windows.Media.ColorConverter]::ConvertFromString('#1A3A6E'))
+            $ctrl['BtnStartRebuild'].BorderBrush = New-Object System.Windows.Media.SolidColorBrush(
+                [System.Windows.Media.ColorConverter]::ConvertFromString('#2E5FAE'))
+        }
         # Default the date picker to today if nothing is selected
         if ($null -eq $ctrl['DpScheduleDate'].SelectedDate) {
             $ctrl['DpScheduleDate'].SelectedDate = [datetime]::Today
@@ -750,12 +784,15 @@ function Start-BMGui {
     }.GetNewClosure())
 
     $ctrl['ChkSchedule'].Add_Unchecked({
-        $ctrl['SchedulePanel'].Visibility    = [System.Windows.Visibility]::Collapsed
-        $ctrl['BtnStartRebuild'].Content     = '>  Start Rebuild'
-        $ctrl['BtnStartRebuild'].Background  = New-Object System.Windows.Media.SolidColorBrush(
-            [System.Windows.Media.ColorConverter]::ConvertFromString('#1B5E20'))
-        $ctrl['BtnStartRebuild'].BorderBrush = New-Object System.Windows.Media.SolidColorBrush(
-            [System.Windows.Media.ColorConverter]::ConvertFromString('#388E3C'))
+        $ctrl['SchedulePanel'].Visibility = [System.Windows.Visibility]::Collapsed
+        # Only relabel the button when not in stop mode
+        if ($ctrl['BtnStartRebuild'].Tag -ne 'stop') {
+            $ctrl['BtnStartRebuild'].Content     = '>  Start Rebuild'
+            $ctrl['BtnStartRebuild'].Background  = New-Object System.Windows.Media.SolidColorBrush(
+                [System.Windows.Media.ColorConverter]::ConvertFromString('#1B5E20'))
+            $ctrl['BtnStartRebuild'].BorderBrush = New-Object System.Windows.Media.SolidColorBrush(
+                [System.Windows.Media.ColorConverter]::ConvertFromString('#388E3C'))
+        }
     }.GetNewClosure())
 
     # -------------------------------------------------------------------------
@@ -763,7 +800,35 @@ function Start-BMGui {
     # -------------------------------------------------------------------------
 
     $ctrl['BtnStartRebuild'].Add_Click({
-        # -- No elevation available: warn but allow VMs to proceed --------------
+
+        # ==========  STOP MODE  ==============================================
+        # Button is currently "Stop All Builds" - cancel everything.
+        if ($ctrl['BtnStartRebuild'].Tag -eq 'stop') {
+            $active = @(Get-BMJobs | Where-Object {
+                $_.Status -notin @('Completed','Failed','Cancelled')
+            })
+            if ($active.Count -gt 0) {
+                $ans = [System.Windows.MessageBox]::Show(
+                    ("Stop all $($active.Count) active / pending rebuild(s)?`n`n" +
+                     "Jobs already staged will continue running on the machines;`n" +
+                     "only this tool's monitoring will be cancelled."),
+                    'Stop All Builds',
+                    [System.Windows.MessageBoxButton]::YesNo,
+                    [System.Windows.MessageBoxImage]::Warning)
+                if ($ans -ne [System.Windows.MessageBoxResult]::Yes) { return }
+            }
+
+            Stop-AllBMJobs | Out-Null
+            Stop-BMEngine
+            & $setStartMode
+            try { $ctrl['JobGrid'].Items.Refresh() } catch { }
+            Write-BMLog -Message 'All active builds stopped by user.' -Level Warning
+            return
+        }
+
+        # ==========  START MODE  =============================================
+
+        # -- No elevation available: warn but allow VMs to proceed -------------
         $sessCtx = Get-BMSessionContext
         if ($sessCtx.Blocked) {
             $answer = [System.Windows.MessageBox]::Show(
@@ -778,7 +843,7 @@ function Start-BMGui {
             if ($answer -ne [System.Windows.MessageBoxResult]::Yes) { return }
         }
 
-        # -- Regular credentials required in privileged sessions -------------
+        # -- Regular credentials required in privileged sessions ---------------
         if (-not (Test-BMRegularCredentialSet)) {
             [System.Windows.MessageBox]::Show(
                 'Please set your regular account credentials first.' + "`n`n" +
@@ -789,7 +854,7 @@ function Start-BMGui {
             return
         }
 
-        # Parse machine names  (@() forces array so .Count is always valid)
+        # Parse machine names (@() forces array so .Count is always valid)
         $raw      = $ctrl['TxtMachines'].Text
         $machines = @($raw -split "`n" |
                       ForEach-Object { $_.Trim().ToUpper() } |
@@ -805,7 +870,7 @@ function Start-BMGui {
             return
         }
 
-        # -- Resolve scheduled time if toggle is checked ----------------------
+        # -- Resolve scheduled time if toggle is checked -----------------------
         $scheduleFor = $null
         if ($ctrl['ChkSchedule'].IsChecked -eq $true) {
             $selectedDate = $ctrl['DpScheduleDate'].SelectedDate
@@ -836,7 +901,8 @@ function Start-BMGui {
 
             if ($scheduleFor -le [datetime]::Now) {
                 [System.Windows.MessageBox]::Show(
-                    ("Scheduled time {0} is in the past.`nPlease choose a future date/time." -f $scheduleFor.ToString('MM/dd/yyyy HH:mm')),
+                    ("Scheduled time {0} is in the past.`nPlease choose a future date/time." -f
+                     $scheduleFor.ToString('MM/dd/yyyy HH:mm')),
                     'Time in Past',
                     [System.Windows.MessageBoxButton]::OK,
                     [System.Windows.MessageBoxImage]::Warning) | Out-Null
@@ -851,32 +917,37 @@ function Start-BMGui {
         if ([int]::TryParse($ctrl['TxtPollInterval'].Text, [ref]$pollInterval) -and $pollInterval -gt 0) {}
         Set-BMEngineConfig -StagingWaitMinutes $stagingWait -PollIntervalSeconds $pollInterval
 
-        # Add jobs
+        # Add jobs - ObservableCollection fires CollectionChanged immediately;
+        # rows appear in the DataGrid as soon as each Add-BMJob returns.
         foreach ($m in $machines) {
             Add-BMJob -MachineName $m -ScheduledFor $scheduleFor | Out-Null
         }
 
-        # Start engine if not running (engine must run to watch for scheduled times)
+        # Start engine if not already running
         if (-not (Test-BMEngineRunning)) {
             Start-BMEngine
         }
 
         # Trigger an immediate engine tick so jobs start processing at once
-        # rather than waiting up to 30 s for the first timer interval.
+        # (don't wait up to 30 s for the first DispatcherTimer interval)
         try { Invoke-BMEngineTick } catch { }
 
-        # Refresh the grid now so updated statuses are visible immediately
-        # (PSCustomObject doesn't implement INotifyPropertyChanged; Items.Refresh()
-        #  is needed to push property changes to the DataGrid cells).
+        # Refresh grid cells so updated property values appear straight away
+        # (PSCustomObject has no INotifyPropertyChanged; Items.Refresh() is needed)
         try { $ctrl['JobGrid'].Items.Refresh() } catch { }
 
         $ctrl['TxtMachines'].Clear()
 
         if ($null -ne $scheduleFor) {
-            Write-BMLog -Message ("Scheduled {0} machine(s) for {1}" -f $machines.Count, $scheduleFor.ToString('MM/dd/yyyy HH:mm')) -Level Info
+            Write-BMLog -Message ("Scheduled {0} machine(s) for {1}" -f
+                                  $machines.Count, $scheduleFor.ToString('MM/dd/yyyy HH:mm')) -Level Info
         } else {
-            Write-BMLog -Message ("Queued {0} machine(s) for immediate rebuild" -f $machines.Count) -Level Info
+            Write-BMLog -Message ("Queued {0} machine(s) for rebuild" -f $machines.Count) -Level Info
         }
+
+        # Switch button to Stop mode so user can halt everything mid-run
+        & $setStopMode
+
     }.GetNewClosure())
 
     # -------------------------------------------------------------------------
@@ -962,6 +1033,19 @@ function Start-BMGui {
                 'No jobs queued. Enter machine names and click Start Rebuild.'
             }
             $ctrl['StatusBarRight'].Text = ("Environment: {0}  |  {1}" -f $Environment, (Get-Date -Format 'HH:mm:ss'))
+
+            # Auto-reset Start/Stop button once all jobs reach a terminal state.
+            # Only fires when in stop mode (meaning a batch was actually started).
+            if ($ctrl['BtnStartRebuild'].Tag -eq 'stop') {
+                $nonTerminal = @($jobs | Where-Object {
+                    $_.Status -notin @('Completed','Failed','Cancelled')
+                }).Count
+                if ($nonTerminal -eq 0 -and $total -gt 0) {
+                    & $setStartMode
+                    try { Stop-BMEngine } catch { }
+                    Write-BMLog -Message ('All builds finished - engine stopped.') -Level Info
+                }
+            }
         }
         catch {
             # Non-fatal UI refresh error - swallow to prevent crashing ShowDialog
@@ -1008,13 +1092,18 @@ function Start-BMGui {
             Write-BMLog -Message '[DEV] WhatIf mode checkbox enabled - no EPM or privileged session detected.' -Level Warning
         }
 
-        # -- Initial credential display & startup log -----------------------
+        # -- Initialise Start button to start mode ----------------------------
+        $ctrl['BtnStartRebuild'].Tag = 'start'
+
+        # -- Initial credential display & startup log --------------------------
         & $updateCredsDisplay
         $uiTimer.Start()
         Write-BMLog -Message ("BuildMaster GUI loaded - Environment: {0}" -f $Environment) -Level Info
         Write-BMLog -Message ("Session: {0}  Elevation: {1}  Blocked: {2}" -f `
                               $ctx.FullUser, $ctx.ElevationMethod, $ctx.Blocked) -Level Info
-        Write-BMLog -Message ("Network path: \\FileServer\ITTools\BuildMaster\{0}\BuildMaster.ps1" -f $Environment) -Level Debug
+        # Derive the script root from the log path ($LogPath = <root>\Logs)
+        $scriptDir = Split-Path -Parent $LogPath
+        Write-BMLog -Message ("Script root: {0}" -f $scriptDir) -Level Debug
     }.GetNewClosure())
 
     $window.Add_Closing({

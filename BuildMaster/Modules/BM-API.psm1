@@ -280,15 +280,24 @@ function Get-BMStageEntryTime {
 function Get-VWDesktopInfo {
     <#
     .SYNOPSIS
-        Queries VirtualWorks for desktop type info by FQDN/hostname.
-        Returns the response object (check .Results.DesktopType) or $null
-        when the machine is not found in VirtualWorks (HTTP 404 / empty results).
+        Queries VirtualWorks for a machine's desktop record by FQDN.
+        Returns the raw response object (XmlDocument or PSObject depending on
+        server Content-Type), or $null when the machine is not found (HTTP 404).
+
     .DESCRIPTION
-        DesktopType values:
-            "VM"       -> Virtual machine  (use VW API reboot)
-            "Moonshot" -> DiDC / Moonshot   (use VW API reboot)
-            "Non-DiDC" -> Physical machine  (use privileged reboot)
-            (no results) -> Physical machine (not a VW-managed machine)
+        Actual XML response shape:
+            <PagedResult xmlns="http://...com/api">
+              <Result>
+                <Desktop>
+                  <DesktopType>VM</DesktopType>   <!-- or Moonshot / Non-DiDC -->
+                  <HostName>machine.domain.com</HostName>
+                  <Id>4259915</Id>
+                  ...
+                </Desktop>
+              </Result>
+            </PagedResult>
+
+        Each hostname query returns exactly one Desktop record.
     #>
     [CmdletBinding()]
     param(
@@ -301,7 +310,8 @@ function Get-VWDesktopInfo {
         return Invoke-BMRestCall -Uri $uri -Method GET -Credential $Credential
     }
     catch {
-        if ($_ -match 'HTTP 404') { return $null }
+        # HTTP 404 means the machine is not registered in VirtualWorks (physical)
+        if ($_.Exception.Message -match 'HTTP 404') { return $null }
         throw
     }
 }
@@ -309,8 +319,17 @@ function Get-VWDesktopInfo {
 function Test-IsVirtualMachine {
     <#
     .SYNOPSIS
-        Returns $true if VirtualWorks reports this machine as a VM or DiDC.
-        Returns $false for physical machines or machines not in VirtualWorks.
+        Returns $true if VirtualWorks reports this machine as a VM or DiDC/Moonshot.
+        Returns $false for physical machines, unknown machines, or on API error.
+
+    .DESCRIPTION
+        VW returns XML with a default namespace.  Direct dot-notation property access
+        is unreliable against a default-namespaced XmlDocument in PowerShell 5.1, so
+        we use XPath local-name() queries which are namespace-agnostic.
+
+        DesktopType "VM" or "Moonshot"  -> $true  (reboot via VW API)
+        DesktopType "Non-DiDC" / absent -> $false (reboot requires elevation)
+        API unreachable / any error     -> $false (fail-safe: treat as Physical)
     #>
     [CmdletBinding()]
     [OutputType([bool])]
@@ -319,17 +338,52 @@ function Test-IsVirtualMachine {
         [System.Management.Automation.PSCredential]$Credential
     )
 
-    $info = Get-VWDesktopInfo -ComputerName $ComputerName -Credential $Credential
+    try {
+        $info = Get-VWDesktopInfo -ComputerName $ComputerName -Credential $Credential
 
-    if ($null -eq $info) { return $false }
+        # 404 / empty body -> not a VW-managed machine -> physical
+        if ($null -eq $info) { return $false }
 
-    # Results may be an array or a single object depending on the API version
-    $results = if ($null -ne $info.Results) { @($info.Results) } else { @() }
+        # ------------------------------------------------------------------
+        # Parse DesktopType from the XML response.
+        #
+        # The VW API returns XML with a default namespace
+        # (xmlns="http://...com/api").  Dot-notation on XmlDocument can silently
+        # return $null when elements are in a default namespace, so we use
+        # XPath with local-name() which matches regardless of namespace.
+        #
+        # Target path:  /PagedResult/Result/Desktop/DesktopType
+        # Each hostname query returns exactly one Desktop record.
+        # ------------------------------------------------------------------
+        $desktopType = $null
 
-    if ($results.Count -eq 0) { return $false }
+        if ($info -is [System.Xml.XmlNode]) {
+            # Invoke-RestMethod returned an XmlDocument (XML Content-Type)
+            $dtNode = $info.SelectSingleNode('//*[local-name()="DesktopType"]')
+            if ($null -ne $dtNode) {
+                $desktopType = $dtNode.InnerText.Trim()
+            }
+        }
+        elseif ($null -ne $info.Result) {
+            # Fallback: PSObject / JSON response with Result.Desktop structure
+            $desktopType = $info.Result.Desktop.DesktopType
+        }
 
-    $desktopType = $results[0].DesktopType
-    return ($desktopType -in @('VM', 'Moonshot'))
+        if ([string]::IsNullOrEmpty($desktopType)) {
+            Write-Verbose ("No VW Desktop record found for '{0}'" -f $ComputerName)
+            return $false
+        }
+
+        Write-Verbose ("VW DesktopType for '{0}': {1}" -f $ComputerName, $desktopType)
+        return ($desktopType -in @('VM', 'Moonshot'))
+    }
+    catch {
+        # VirtualWorks unreachable or returned an unexpected error.
+        # Default to $false (treat as Physical) so the staging step is not blocked.
+        Write-Warning ("VW machine-type check failed for '{0}': {1}  [Defaulting to Physical]" -f
+                       $ComputerName, $_.Exception.Message)
+        return $false
+    }
 }
 
 # -----------------------------------------------------------------------------

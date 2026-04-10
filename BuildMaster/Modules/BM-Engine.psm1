@@ -216,6 +216,33 @@ function Clear-BMCompletedJobs {
     foreach ($j in $toRemove) { $script:Jobs.Remove($j) | Out-Null }
 }
 
+function Stop-AllBMJobs {
+    <#
+    .SYNOPSIS  Cancels every non-terminal job in the queue.
+    .OUTPUTS   [int] number of jobs that were cancelled.
+    .DESCRIPTION
+        Jobs already dispatched to BuildMaster will continue on the server;
+        only this tool's local tracking is stopped.
+    #>
+    [CmdletBinding()]
+    [OutputType([int])]
+    param()
+
+    $active = @($script:Jobs | Where-Object {
+        $_.Status -notin @('Completed','Failed','Cancelled')
+    })
+
+    foreach ($j in $active) {
+        $j.CancelRequested = $true
+        $j.Status          = 'Cancelled'
+        $j.Message         = 'Cancelled by user (Stop All Builds)'
+        $j.StatusIcon      = [char]0x274C   # [X]
+        Write-BMLog -MachineName $j.MachineName -Message 'Job cancelled (Stop All Builds)' -Level Warning
+    }
+
+    return $active.Count
+}
+
 # -----------------------------------------------------------------------------
 #  ENGINE LIFECYCLE
 # -----------------------------------------------------------------------------
@@ -420,14 +447,27 @@ function Invoke-BMStep_Stage {
     try {
         $regCred = Get-BMRegularCredential  # $null for regular sessions (SSO)
 
-        # Detect VM vs physical if not yet known
+        # Detect VM vs physical if not yet known.
+        # Wrapped in its own try/catch so a VW API failure does not fail
+        # the whole staging step; Test-IsVirtualMachine already catches
+        # internally and returns $false, but this is a belt-and-suspenders guard.
         if ($null -eq $Job.IsVM) {
             $Job.Message = 'Detecting machine type (VirtualWorks lookup)...'
             Write-BMLog -MachineName $Job.MachineName -Message 'Checking VirtualWorks for machine type' -Level Debug
-            $Job.IsVM        = Test-IsVirtualMachine -ComputerName $Job.MachineName -Credential $regCred
+            try {
+                $Job.IsVM = Test-IsVirtualMachine -ComputerName $Job.MachineName -Credential $regCred
+            }
+            catch {
+                # VW unreachable - default to Physical and continue
+                $Job.IsVM = $false
+                Write-BMLog -MachineName $Job.MachineName `
+                            -Message ("VW check error (defaulting to Physical): {0}" -f $_.Exception.Message) `
+                            -Level Warning
+            }
             $Job.MachineType = if ($Job.IsVM) { 'VM/DiDC' } else { 'Physical' }
             Write-BMLog -MachineName $Job.MachineName `
-                        -Message ("Machine type detected: {0}" -f $Job.MachineType) -Level Info
+                        -Message ("Machine type resolved: {0} (IsVM={1})" -f $Job.MachineType, $Job.IsVM) `
+                        -Level Info
         }
 
         # Issue stage request
@@ -691,6 +731,7 @@ Export-ModuleMember -Function @(
     # Job management
     'Add-BMJob',
     'Stop-BMJob',
+    'Stop-AllBMJobs',
     'Remove-BMJob',
     'Get-BMJob',
     'Get-BMJobs',
