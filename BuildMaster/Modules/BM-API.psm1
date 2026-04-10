@@ -182,8 +182,8 @@ function Get-BMBuildData {
         [Parameter(Mandatory)][string]$ComputerName,
         [System.Management.Automation.PSCredential]$Credential
     )
-    $uri = ('{0}/v1/machinebuild?computerName={1}' -f
-            $script:BMBaseUrl, [Uri]::EscapeDataString((Get-BMHostname -ComputerName $ComputerName)))
+    $uri = ('{0}/v1/machinebuild?query.computerNameOrMacAddressSearchExpression={1}' -f
+            $script:BMBaseUrl, $ComputerName)
     return Invoke-BMRestCall -Uri $uri -Method GET -Credential $Credential
 }
 
@@ -207,7 +207,7 @@ function Get-BMBuildInstance {
         [System.Management.Automation.PSCredential]$Credential
     )
     $uri = ('{0}/v1/machinebuild/instance/{1}' -f
-            $script:BMBaseUrl, [Uri]::EscapeDataString($BuildId))
+            $script:BMBaseUrl, $BuildId)
     return Invoke-BMRestCall -Uri $uri -Method GET -Credential $Credential
 }
 
@@ -357,7 +357,7 @@ function Test-IsVirtualMachine {
         # ------------------------------------------------------------------
         $desktopType = $null
 
-        if ($info -is [System.Xml.XmlNode]) {
+        if ($info -is [System.Xml.XmlDocument]) {
             # Invoke-RestMethod returned an XmlDocument (XML Content-Type)
             $dtNode = $info.SelectSingleNode('//*[local-name()="DesktopType"]')
             if ($null -ne $dtNode) {
@@ -366,7 +366,7 @@ function Test-IsVirtualMachine {
         }
         elseif ($null -ne $info.Result) {
             # Fallback: PSObject / JSON response with Result.Desktop structure
-            $desktopType = $info.Result.Desktop.DesktopType
+            $desktopType = $info.Result.DesktopType
         }
 
         if ([string]::IsNullOrEmpty($desktopType)) {
