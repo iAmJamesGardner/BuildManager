@@ -99,6 +99,20 @@ $ErrorActionPreference = 'Stop'
         <Style TargetType="ScrollBar">
             <Setter Property="Background" Value="#1A1A30"/>
         </Style>
+        <!-- Dark-theme ProgressBar template - used in the job grid Progress column.
+             PART_Track measures available width; PART_Indicator is sized by the control. -->
+        <ControlTemplate x:Key="DarkProgressBarTemplate" TargetType="ProgressBar">
+            <Border Background="{TemplateBinding Background}"
+                    BorderBrush="{TemplateBinding BorderBrush}"
+                    BorderThickness="1" CornerRadius="2">
+                <Grid Margin="1">
+                    <Rectangle x:Name="PART_Track"     Fill="Transparent"/>
+                    <Rectangle x:Name="PART_Indicator" HorizontalAlignment="Left"
+                               Fill="{TemplateBinding Foreground}"
+                               RadiusX="1" RadiusY="1"/>
+                </Grid>
+            </Border>
+        </ControlTemplate>
     </Window.Resources>
 
     <Grid>
@@ -369,6 +383,43 @@ $ErrorActionPreference = 'Stop'
                                 </Style>
                             </DataGridTextColumn.ElementStyle>
                         </DataGridTextColumn>
+
+                        <!-- Progress bar -->
+                        <DataGridTemplateColumn Header="Progress" Width="100"
+                                                CanUserSort="False" CanUserResize="True">
+                            <DataGridTemplateColumn.CellTemplate>
+                                <DataTemplate>
+                                    <ProgressBar Value="{Binding ProgressValue}" Maximum="100"
+                                                 Height="14" Margin="4,2">
+                                        <ProgressBar.Style>
+                                            <Style TargetType="ProgressBar">
+                                                <Setter Property="Template"    Value="{StaticResource DarkProgressBarTemplate}"/>
+                                                <Setter Property="Background"  Value="#1A1A40"/>
+                                                <Setter Property="Foreground"  Value="#4488FF"/>
+                                                <Setter Property="BorderBrush" Value="#404068"/>
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding Status}" Value="Completed">
+                                                        <Setter Property="Foreground" Value="#00C853"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding Status}" Value="Monitoring">
+                                                        <Setter Property="Foreground" Value="#00BCD4"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding Status}" Value="Error">
+                                                        <Setter Property="Foreground" Value="#FF9800"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding Status}" Value="Failed">
+                                                        <Setter Property="Foreground" Value="#FF1744"/>
+                                                    </DataTrigger>
+                                                    <DataTrigger Binding="{Binding Status}" Value="Cancelled">
+                                                        <Setter Property="Foreground" Value="#607D8B"/>
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </ProgressBar.Style>
+                                    </ProgressBar>
+                                </DataTemplate>
+                            </DataGridTemplateColumn.CellTemplate>
+                        </DataGridTemplateColumn>
 
                         <!-- Message -->
                         <DataGridTextColumn Header="Message"
@@ -809,6 +860,15 @@ function Start-BMGui {
         if (-not (Test-BMEngineRunning)) {
             Start-BMEngine
         }
+
+        # Trigger an immediate engine tick so jobs start processing at once
+        # rather than waiting up to 30 s for the first timer interval.
+        try { Invoke-BMEngineTick } catch { }
+
+        # Refresh the grid now so updated statuses are visible immediately
+        # (PSCustomObject doesn't implement INotifyPropertyChanged; Items.Refresh()
+        #  is needed to push property changes to the DataGrid cells).
+        try { $ctrl['JobGrid'].Items.Refresh() } catch { }
 
         $ctrl['TxtMachines'].Clear()
 

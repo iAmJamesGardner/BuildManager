@@ -43,9 +43,48 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-# -- Base URLs -----------------------------------------------------------------
-$script:BMBaseUrl = 'http://bm.zz.com/new-api'
-$script:VWBaseUrl = 'http://vw.zz.com/vwapi/Desktop'
+# -- Base URLs / FQDN config ---------------------------------------------------
+$script:BMBaseUrl    = 'http://bm.zz.com/new-api'
+$script:VWBaseUrl    = 'http://vw.zz.com/vwapi/Desktop'
+# VirtualWorks requires FQDN; BuildMaster uses short computer name only.
+# Override at runtime with Set-BMAPIConfig if the suffix differs per environment.
+$script:VWFqdnSuffix = 'xxxx.yy.com'
+
+# -----------------------------------------------------------------------------
+#  CONFIG (runtime override)
+# -----------------------------------------------------------------------------
+
+function Set-BMAPIConfig {
+    <#
+    .SYNOPSIS  Overrides base URL or FQDN suffix at runtime (e.g. per environment).
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$VWFqdnSuffix,
+        [string]$BMBaseUrl,
+        [string]$VWBaseUrl
+    )
+    if ($PSBoundParameters.ContainsKey('VWFqdnSuffix')) { $script:VWFqdnSuffix = $VWFqdnSuffix }
+    if ($PSBoundParameters.ContainsKey('BMBaseUrl'))    { $script:BMBaseUrl    = $BMBaseUrl    }
+    if ($PSBoundParameters.ContainsKey('VWBaseUrl'))    { $script:VWBaseUrl    = $VWBaseUrl    }
+}
+
+# -- Private hostname helpers --------------------------------------------------
+
+function Get-VWFqdn {
+    # Returns a FQDN for VirtualWorks API calls.
+    # If $ComputerName already contains a dot it is returned unchanged;
+    # otherwise $script:VWFqdnSuffix is appended.
+    param([string]$ComputerName)
+    if ($ComputerName -match '\.') { return $ComputerName }
+    return ('{0}.{1}' -f $ComputerName, $script:VWFqdnSuffix)
+}
+
+function Get-BMHostname {
+    # Returns the short (pre-dot) hostname for BuildMaster API calls.
+    param([string]$ComputerName)
+    return $ComputerName.Split('.')[0]
+}
 
 # -----------------------------------------------------------------------------
 #  INTERNAL REST HELPER
@@ -123,7 +162,7 @@ function Invoke-BMStage {
         [System.Management.Automation.PSCredential]$Credential
     )
     $uri  = ('{0}/v1/machinebuild/StageMachineByName' -f $script:BMBaseUrl)
-    $body = @{ ComputerName = $ComputerName }
+    $body = @{ ComputerName = (Get-BMHostname -ComputerName $ComputerName) }
     return Invoke-BMRestCall -Uri $uri -Method POST -Body $body -Credential $Credential
 }
 
@@ -144,7 +183,7 @@ function Get-BMBuildData {
         [System.Management.Automation.PSCredential]$Credential
     )
     $uri = ('{0}/v1/machinebuild?computerName={1}' -f
-            $script:BMBaseUrl, [Uri]::EscapeDataString($ComputerName))
+            $script:BMBaseUrl, [Uri]::EscapeDataString((Get-BMHostname -ComputerName $ComputerName)))
     return Invoke-BMRestCall -Uri $uri -Method GET -Credential $Credential
 }
 
@@ -257,7 +296,8 @@ function Get-VWDesktopInfo {
         [System.Management.Automation.PSCredential]$Credential
     )
     try {
-        $uri = ('{0}/Desktops?hostnames={1}' -f $script:VWBaseUrl, [Uri]::EscapeDataString($ComputerName))
+        $fqdn = Get-VWFqdn -ComputerName $ComputerName
+        $uri  = ('{0}/Desktops?hostnames={1}' -f $script:VWBaseUrl, [Uri]::EscapeDataString($fqdn))
         return Invoke-BMRestCall -Uri $uri -Method GET -Credential $Credential
     }
     catch {
@@ -309,7 +349,7 @@ function Invoke-VWReboot {
         [System.Management.Automation.PSCredential]$Credential
     )
     $uri  = ('{0}/Desktops' -f $script:VWBaseUrl)
-    $body = @{ Id = $ComputerName }
+    $body = @{ Id = (Get-VWFqdn -ComputerName $ComputerName) }
     return Invoke-BMRestCall -Uri $uri -Method POST -Body $body -Credential $Credential
 }
 
@@ -317,6 +357,7 @@ function Invoke-VWReboot {
 #  EXPORTS
 # -----------------------------------------------------------------------------
 Export-ModuleMember -Function @(
+    'Set-BMAPIConfig',
     'Invoke-BMStage',
     'Get-BMBuildData',
     'Get-BMBuildInstance',

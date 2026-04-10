@@ -132,7 +132,8 @@ function New-BMJobObject {
         ScheduledFor    = $null          # [datetime] or $null = run immediately
         ScheduleLabel   = 'Now'          # Display string shown in grid column
         # -- Display -------------------------------------------------------
-        Message         = 'Queued - waiting for credentials & start signal'
+        ProgressValue   = 0
+        Message         = 'Queued'
         StatusIcon      = [char]0x23F3   # [wait]
         MachineType     = 'Unknown'
         ElapsedDisplay  = '00:00:00'
@@ -307,12 +308,52 @@ function Invoke-BMEngineTick {
     }
 }
 
+function Get-BMJobProgress {
+    <#
+    .SYNOPSIS  Returns a 0-100 integer progress value for the job's current state.
+    .DESCRIPTION
+        Terminal states (Failed/Cancelled/Error) return the current ProgressValue
+        unchanged so the bar freezes at the point of failure.
+    #>
+    param([object]$Job)
+    switch ($Job.Status) {
+        'Scheduled'   { return 0  }
+        'Pending'     { return 2  }
+        'Staging'     { return 8  }
+        'StagingWait' {
+            if ($null -ne $Job.StagedAt) {
+                $pct = ([datetime]::Now - $Job.StagedAt).TotalMinutes / [math]::Max(1, $script:StagingWaitMinutes)
+                $pct = [math]::Min($pct, 1.0)
+                return [int](10 + $pct * 20)   # 10 -> 30 %
+            }
+            return 10
+        }
+        'Rebooting'   { return 32 }
+        'Monitoring'  {
+            switch ($Job.BuildStage) {
+                'Waiting'    { return 35 }
+                'Staged'     { return 42 }
+                'Started'    { return 58 }
+                'OSComplete' { return 82 }
+                default      { return 38 }
+            }
+        }
+        'Completed'   { return 100 }
+        # Terminal states - freeze at wherever the bar was
+        'Failed'      { return $Job.ProgressValue }
+        'Cancelled'   { return $Job.ProgressValue }
+        'Error'       { return $Job.ProgressValue }
+        default       { return 0 }
+    }
+}
+
 function Update-BMJobElapsed {
     param([object]$Job)
     if ($null -ne $Job.StartedAt) {
         $e = [datetime]::Now - $Job.StartedAt
         $Job.ElapsedDisplay = ('{0:hh\:mm\:ss}' -f $e)
     }
+    $Job.ProgressValue = Get-BMJobProgress -Job $Job
 }
 
 # -----------------------------------------------------------------------------
