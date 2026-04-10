@@ -92,10 +92,16 @@ function Get-BMHostname {
 
 function Invoke-BMRestCall {
     <#
-    .SYNOPSIS  Internal REST helper with PS 5.1 error handling.
+    .SYNOPSIS  Internal REST helper compatible with PS 5.1 and PS 7+.
     .DESCRIPTION
         Pass a PSCredential for explicit auth.
         Pass $null to use -UseDefaultCredentials (Windows SSO for regular sessions).
+
+        PS 7+ changed the default behaviour so that credentials are NOT sent over
+        plain HTTP unless -AllowUnencryptedAuthentication is specified.  This
+        function detects the runtime version and adds that switch automatically
+        when running on PS 7+; it is never passed on PS 5.1 where the parameter
+        does not exist.
     #>
     [CmdletBinding()]
     param(
@@ -121,6 +127,13 @@ function Invoke-BMRestCall {
     else {
         # $null credential -> use the current Windows session token (SSO / Kerberos / NTLM)
         $params.UseDefaultCredentials = $true
+    }
+
+    # PS 7+ blocks credential transmission over plain HTTP by default.
+    # -AllowUnencryptedAuthentication opts back in; the parameter does not
+    # exist in PS 5.1 so it must only be added when running on PS 7+.
+    if ($PSVersionTable.PSVersion.Major -ge 7) {
+        $params.AllowUnencryptedAuthentication = $true
     }
 
     try {
