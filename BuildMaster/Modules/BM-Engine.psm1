@@ -54,6 +54,135 @@ $script:Jobs = New-Object 'System.Collections.ObjectModel.ObservableCollection[O
 $script:EngineTimer = $null
 
 # -----------------------------------------------------------------------------
+#  BACKGROUND STAGING WORKER
+#  Staging API calls run in a separate runspace so the UI thread stays responsive.
+#  The worker modifies job PSCustomObject properties directly (local runspace
+#  passes objects by reference - no serialisation).  Log output is marshalled
+#  back to the UI thread via a ConcurrentQueue drained on every engine tick.
+# -----------------------------------------------------------------------------
+$script:BgPS          = $null   # [powershell] instance
+$script:BgRunspace    = $null   # [Runspace] for the worker
+$script:BgAsyncResult = $null   # IAsyncResult from BeginInvoke
+$script:BgModulePath  = ''      # Path to BM-API.psm1 (set via Set-BMEngineConfig)
+$script:BgLogQueue    = [System.Collections.Concurrent.ConcurrentQueue[string]]::new()
+
+# Scriptblock executed in the background runspace for every staging batch.
+# Parameters are passed by name via PowerShell.AddParameter(); objects are
+# passed by reference because it is a LOCAL (not remote) runspace.
+$script:BgStagingScript = {
+    param(
+        [object[]]$PendingJobs,
+        [System.Management.Automation.PSCredential]$Credential,
+        [string]$ApiModulePath,
+        [string]$BMBaseUrl,
+        [string]$VWBaseUrl,
+        [string]$VWFqdnSuffix,
+        [int]$StagingWaitMinutes,
+        [System.Collections.Concurrent.ConcurrentQueue[string]]$LogQueue
+    )
+
+    Import-Module $ApiModulePath -Force -DisableNameChecking
+    Set-BMAPIConfig -BMBaseUrl $BMBaseUrl -VWBaseUrl $VWBaseUrl -VWFqdnSuffix $VWFqdnSuffix
+
+    foreach ($job in $PendingJobs) {
+        if ($job.CancelRequested) { continue }
+
+        $job.Status     = 'Staging'
+        $job.Message    = 'Checking build status...'
+        $job.StatusIcon = [char]0x25B6
+
+        try {
+            # ------------------------------------------------------------------
+            # Step 1: Build-status pre-check
+            # If BuildMaster already reports the machine as Staged, skip the
+            # stage API call entirely and jump straight to StagingWait.
+            # ------------------------------------------------------------------
+            $currentStatus = $null
+            try {
+                $currentStatus = Get-BMBuildStatus -ComputerName $job.MachineName -Credential $Credential
+            }
+            catch {
+                $LogQueue.Enqueue(('DEBUG|{0}|Build status pre-check failed (will stage normally): {1}' -f $job.MachineName, $_.Exception.Message))
+            }
+
+            $alreadyStaged = (-not [string]::IsNullOrWhiteSpace($currentStatus) -and
+                              $currentStatus -ieq 'Staged')
+
+            # ------------------------------------------------------------------
+            # Step 2: VM detection  (needed for the reboot step either way)
+            # ------------------------------------------------------------------
+            $job.Message = 'Detecting machine type (VirtualWorks lookup)...'
+            $LogQueue.Enqueue(('DEBUG|{0}|Checking VirtualWorks for machine type' -f $job.MachineName))
+            try {
+                $job.IsVM = Test-IsVirtualMachine -ComputerName $job.MachineName -Credential $Credential
+            }
+            catch {
+                $job.IsVM = $false
+                $LogQueue.Enqueue(('WARNING|{0}|VW check error (defaulting to Physical): {1}' -f $job.MachineName, $_.Exception.Message))
+            }
+            $job.MachineType = if ($job.IsVM) { 'VM/DiDC' } else { 'Physical' }
+            $LogQueue.Enqueue(('INFO|{0}|Machine type resolved: {1} (IsVM={2})' -f $job.MachineName, $job.MachineType, $job.IsVM))
+
+            if ($alreadyStaged) {
+                # Already staged - skip the API call, go straight to wait
+                if ($job.CancelRequested) { continue }
+                $job.StagedAt   = [datetime]::Now
+                $job.Status     = 'StagingWait'
+                $job.StatusIcon = [char]0x23F0
+                $job.Message    = ('Already staged in BuildMaster. Waiting {0} min before reboot...' -f $StagingWaitMinutes)
+                $LogQueue.Enqueue(('INFO|{0}|Build status is Staged - skipping stage API call. Waiting {1} min.' -f $job.MachineName, $StagingWaitMinutes))
+            }
+            else {
+                # ------------------------------------------------------------------
+                # Step 3: Stage the machine
+                # ------------------------------------------------------------------
+                $job.Message = 'Contacting BuildMaster to stage machine...'
+                $stageResult = Invoke-BMStage -ComputerName $job.MachineName -Credential $Credential
+
+                if ($job.CancelRequested) { continue }
+
+                $job.StagedAt   = [datetime]::Now
+                $job.Status     = 'StagingWait'
+                $job.StatusIcon = [char]0x23F0
+
+                if ($stageResult.AlreadyStarted) {
+                    $job.Message = ('Build already in progress. Waiting {0} min before reboot...' -f $StagingWaitMinutes)
+                    $LogQueue.Enqueue(('WARNING|{0}|BuildMaster: build already started - treating as staged. Waiting {1} min.' -f $job.MachineName, $StagingWaitMinutes))
+                }
+                else {
+                    $job.Message = ('Staged. Waiting {0} min before reboot...' -f $StagingWaitMinutes)
+                    $LogQueue.Enqueue(('INFO|{0}|Machine staged successfully. Waiting {1} min.' -f $job.MachineName, $StagingWaitMinutes))
+                }
+
+                # ------------------------------------------------------------------
+                # Step 4: Pre-fetch BuildId (non-fatal)
+                # ------------------------------------------------------------------
+                try {
+                    $buildData = Get-BMBuildData -ComputerName $job.MachineName -Credential $Credential
+                    if ($null -ne $buildData -and -not [string]::IsNullOrEmpty($buildData.BuildId)) {
+                        $job.BuildId    = $buildData.BuildId
+                        $job.InstanceId = if ($null -ne $buildData.InstanceId) { $buildData.InstanceId } else { '' }
+                        $LogQueue.Enqueue(('DEBUG|{0}|BuildId acquired: {1}' -f $job.MachineName, $job.BuildId))
+                    }
+                }
+                catch {
+                    $LogQueue.Enqueue(('DEBUG|{0}|Could not pre-fetch BuildId: {1}' -f $job.MachineName, $_.Exception.Message))
+                }
+            }
+        }
+        catch {
+            if (-not $job.CancelRequested) {
+                $job.LastError  = $_.Exception.Message
+                $job.Message    = ('Stage failed: {0}' -f $_.Exception.Message)
+                $job.Status     = 'Error'
+                $job.StatusIcon = [char]0x26A0
+                $LogQueue.Enqueue(('ERROR|{0}|Stage API failed: {1}' -f $job.MachineName, $_.Exception.Message))
+            }
+        }
+    }
+}
+
+# -----------------------------------------------------------------------------
 #  LOGGING  (shared with GUI - GUI module registers a UI sink)
 # -----------------------------------------------------------------------------
 $script:LogPath    = $null
@@ -270,15 +399,97 @@ function Set-BMEngineConfig {
     [CmdletBinding()]
     param(
         [int]$StagingWaitMinutes,
-        [int]$PollIntervalSeconds
+        [int]$PollIntervalSeconds,
+        [string]$ModulePath          # Path to BM-API.psm1 for the background staging runspace
     )
     if ($PSBoundParameters.ContainsKey('StagingWaitMinutes'))  { $script:StagingWaitMinutes  = $StagingWaitMinutes  }
     if ($PSBoundParameters.ContainsKey('PollIntervalSeconds')) { $script:PollIntervalSeconds = $PollIntervalSeconds }
+    if ($PSBoundParameters.ContainsKey('ModulePath'))          { $script:BgModulePath        = $ModulePath          }
 
     # Update live timer interval if running
     if ($null -ne $script:EngineTimer -and $script:EngineTimer.IsEnabled) {
         $script:EngineTimer.Interval = [timespan]::FromSeconds($script:PollIntervalSeconds)
     }
+}
+
+function Request-BMQuickTick {
+    <#
+    .SYNOPSIS
+        Shortens the DispatcherTimer to 500 ms so the first engine tick fires
+        almost immediately after the current UI event returns.
+        Invoke-BMEngineTick restores the normal interval on the next tick.
+        Call this instead of Invoke-BMEngineTick from UI event handlers to keep
+        the UI thread responsive during API calls.
+    #>
+    if ($null -ne $script:EngineTimer -and $script:EngineTimer.IsEnabled) {
+        $script:EngineTimer.Stop()
+        $script:EngineTimer.Interval = [timespan]::FromMilliseconds(500)
+        $script:EngineTimer.Start()
+    }
+}
+
+function Start-BMStagingBackground {
+    <#
+    .SYNOPSIS
+        Submits all currently-Pending jobs to a background runspace for staging.
+        Returns immediately; the runspace modifies job properties asynchronously.
+        The DispatcherTimer tick drains the log queue and collects the result.
+    #>
+
+    # If a run is already in-flight, do nothing - pending jobs will be picked
+    # up on the next call once the current run completes.
+    if ($null -ne $script:BgPS -and -not $script:BgAsyncResult.IsCompleted) { return }
+
+    $pendingJobs = @($script:Jobs | Where-Object {
+        $_.Status -eq 'Pending' -and -not $_.CancelRequested
+    })
+    if ($pendingJobs.Count -eq 0) { return }
+
+    # Clean up any previously completed (but not yet collected) runner
+    if ($null -ne $script:BgPS) {
+        try   { $script:BgPS.EndInvoke($script:BgAsyncResult) } catch { }
+        $script:BgPS.Dispose()
+        $script:BgPS = $null
+        $script:BgRunspace.Close()
+        $script:BgRunspace.Dispose()
+        $script:BgRunspace    = $null
+        $script:BgAsyncResult = $null
+    }
+
+    # Fallback to inline staging if the API module path is not configured
+    if ([string]::IsNullOrEmpty($script:BgModulePath) -or
+        -not (Test-Path $script:BgModulePath)) {
+        Write-BMLog -Message ('Background staging unavailable: BM-API path not configured ({0}). Falling back to inline staging.' -f $script:BgModulePath) -Level Warning
+        foreach ($job in $pendingJobs) {
+            Invoke-BMStep_Stage -Job $job
+        }
+        return
+    }
+
+    $regCred = Get-BMRegularCredential
+    $apiCfg  = Get-BMAPIConfig
+
+    $rs = [runspacefactory]::CreateRunspace()
+    $rs.ApartmentState = 'MTA'
+    $rs.Open()
+
+    $ps = [powershell]::Create()
+    $ps.Runspace = $rs
+    [void]$ps.AddScript($script:BgStagingScript)
+    [void]$ps.AddParameter('PendingJobs',        $pendingJobs)
+    [void]$ps.AddParameter('Credential',         $regCred)
+    [void]$ps.AddParameter('ApiModulePath',      $script:BgModulePath)
+    [void]$ps.AddParameter('BMBaseUrl',          $apiCfg.BMBaseUrl)
+    [void]$ps.AddParameter('VWBaseUrl',          $apiCfg.VWBaseUrl)
+    [void]$ps.AddParameter('VWFqdnSuffix',       $apiCfg.VWFqdnSuffix)
+    [void]$ps.AddParameter('StagingWaitMinutes', $script:StagingWaitMinutes)
+    [void]$ps.AddParameter('LogQueue',           $script:BgLogQueue)
+
+    $script:BgRunspace    = $rs
+    $script:BgPS          = $ps
+    $script:BgAsyncResult = $ps.BeginInvoke()
+
+    Write-BMLog -Message ("Background staging started for {0} machine(s)" -f $pendingJobs.Count) -Level Debug
 }
 
 function Start-BMEngine {
@@ -323,6 +534,34 @@ function Test-BMEngineRunning {
 # -----------------------------------------------------------------------------
 
 function Invoke-BMEngineTick {
+    # -- Restore normal poll interval if a quick-tick shortened it -------------
+    if ($null -ne $script:EngineTimer -and
+        $script:EngineTimer.Interval.TotalSeconds -lt $script:PollIntervalSeconds) {
+        $script:EngineTimer.Interval = [timespan]::FromSeconds($script:PollIntervalSeconds)
+    }
+
+    # -- Drain background staging log queue ------------------------------------
+    $logEntry = $null
+    while ($script:BgLogQueue.TryDequeue([ref]$logEntry)) {
+        $parts = $logEntry -split '\|', 3
+        if ($parts.Count -eq 3) {
+            Write-BMLog -Level $parts[0] -MachineName $parts[1] -Message $parts[2]
+        }
+    }
+
+    # -- Collect completed background worker -----------------------------------
+    if ($null -ne $script:BgPS -and $script:BgAsyncResult.IsCompleted) {
+        try   { $script:BgPS.EndInvoke($script:BgAsyncResult) }
+        catch { Write-BMLog -Message ("Background staging runner error: {0}" -f $_.Exception.Message) -Level Error }
+        $script:BgPS.Dispose()
+        $script:BgPS = $null
+        $script:BgRunspace.Close()
+        $script:BgRunspace.Dispose()
+        $script:BgRunspace    = $null
+        $script:BgAsyncResult = $null
+        Write-BMLog -Message 'Background staging batch complete' -Level Debug
+    }
+
     $activeStatuses = @('Pending','Staging','StagingWait','Rebooting','Monitoring','Error','Scheduled')
 
     $activeJobs = @($script:Jobs | Where-Object {
@@ -411,8 +650,8 @@ function Invoke-BMJobStep {
 
     switch ($Job.Status) {
         'Scheduled'   { Invoke-BMStep_Scheduled   -Job $Job }
-        'Pending'     { Invoke-BMStep_Stage        -Job $Job }
-        'Staging'     { <# fire-and-forget; next tick checks result - no-op here #> }
+        'Pending'     { Start-BMStagingBackground }   # submits batch to bg runspace; no-op if already in-flight
+        'Staging'     { <# in-flight: background runspace is working #> }
         'StagingWait' { Invoke-BMStep_StagingWait  -Job $Job }
         'Rebooting'   { Invoke-BMStep_Reboot        -Job $Job }
         'Monitoring'  { Invoke-BMStep_Monitor        -Job $Job }
@@ -455,75 +694,55 @@ function Invoke-BMStep_Scheduled {
     }
 }
 
-# -- Step: Stage ---------------------------------------------------------------
+# -- Step: Stage (inline fallback - used when background runspace unavailable) -
 function Invoke-BMStep_Stage {
     param([object]$Job)
+    # Normal path: Start-BMStagingBackground runs this work off the UI thread.
+    # This inline version is only reached when BgModulePath is not configured.
+    # It blocks the UI thread briefly - prefer the background path.
+
+    $regCred = Get-BMRegularCredential
 
     $Job.Status     = 'Staging'
-    $Job.Message    = 'Contacting BuildMaster to stage machine...'
-    $Job.StatusIcon = [char]0x25B6   # (>) staging arrow
+    $Job.Message    = 'Staging (inline - background path unavailable)...'
+    $Job.StatusIcon = [char]0x25B6
 
     try {
-        $regCred = Get-BMRegularCredential  # $null for regular sessions (SSO)
+        # VM detection
+        try   { $Job.IsVM = Test-IsVirtualMachine -ComputerName $Job.MachineName -Credential $regCred }
+        catch { $Job.IsVM = $false }
+        $Job.MachineType = if ($Job.IsVM) { 'VM/DiDC' } else { 'Physical' }
+        Write-BMLog -MachineName $Job.MachineName `
+                    -Message ("Machine type: {0} (IsVM={1})" -f $Job.MachineType, $Job.IsVM) -Level Info
 
-        # Detect VM vs physical if not yet known.
-        # Wrapped in its own try/catch so a VW API failure does not fail
-        # the whole staging step; Test-IsVirtualMachine already catches
-        # internally and returns $false, but this is a belt-and-suspenders guard.
-        if ($null -eq $Job.IsVM) {
-            $Job.Message = 'Detecting machine type (VirtualWorks lookup)...'
-            Write-BMLog -MachineName $Job.MachineName -Message 'Checking VirtualWorks for machine type' -Level Debug
-            try {
-                $Job.IsVM = Test-IsVirtualMachine -ComputerName $Job.MachineName -Credential $regCred
-            }
-            catch {
-                # VW unreachable - default to Physical and continue
-                $Job.IsVM = $false
-                Write-BMLog -MachineName $Job.MachineName `
-                            -Message ("VW check error (defaulting to Physical): {0}" -f $_.Exception.Message) `
-                            -Level Warning
-            }
-            $Job.MachineType = if ($Job.IsVM) { 'VM/DiDC' } else { 'Physical' }
-            Write-BMLog -MachineName $Job.MachineName `
-                        -Message ("Machine type resolved: {0} (IsVM={1})" -f $Job.MachineType, $Job.IsVM) `
-                        -Level Info
-        }
+        # Build-status pre-check
+        $currentStatus = $null
+        try { $currentStatus = Get-BMBuildStatus -ComputerName $Job.MachineName -Credential $regCred } catch { }
 
-        # Issue stage request
-        $stageResult = Invoke-BMStage -ComputerName $Job.MachineName -Credential $regCred
-
-        $Job.StagedAt   = [datetime]::Now
-        $Job.Status     = 'StagingWait'
-        $Job.StatusIcon = [char]0x23F0  # [alarm]
-
-        if ($stageResult.AlreadyStarted) {
-            # API reported the build was already in progress - treat as staged and continue
-            $Job.Message = ("Build already in progress. Waiting {0} min before reboot..." -f $script:StagingWaitMinutes)
-            Write-BMLog -MachineName $Job.MachineName `
-                        -Message ("BuildMaster: build already started - treating as staged. Waiting {0} min." -f $script:StagingWaitMinutes) `
-                        -Level Warning
+        if (-not [string]::IsNullOrWhiteSpace($currentStatus) -and $currentStatus -ieq 'Staged') {
+            $Job.StagedAt   = [datetime]::Now
+            $Job.Status     = 'StagingWait'
+            $Job.StatusIcon = [char]0x23F0
+            $Job.Message    = ("Already staged. Waiting {0} min before reboot..." -f $script:StagingWaitMinutes)
+            Write-BMLog -MachineName $Job.MachineName -Message 'Already staged - skipping stage API call.' -Level Info
         }
         else {
-            $Job.Message = ("Staged. Waiting {0} min before reboot..." -f $script:StagingWaitMinutes)
-            Write-BMLog -MachineName $Job.MachineName `
-                        -Message ("Machine staged successfully. Waiting {0} min." -f $script:StagingWaitMinutes) `
-                        -Level Info
-        }
-
-        # Opportunistically fetch BuildId now so monitoring can skip the computer-name lookup
-        try {
-            $buildData = Get-BMBuildData -ComputerName $Job.MachineName -Credential $regCred
-            if ($null -ne $buildData -and -not [string]::IsNullOrEmpty($buildData.BuildId)) {
-                $Job.BuildId    = $buildData.BuildId
-                $Job.InstanceId = if ($null -ne $buildData.InstanceId) { $buildData.InstanceId } else { '' }
-                Write-BMLog -MachineName $Job.MachineName `
-                            -Message ("BuildId acquired: {0}" -f $Job.BuildId) -Level Debug
+            $stageResult    = Invoke-BMStage -ComputerName $Job.MachineName -Credential $regCred
+            $Job.StagedAt   = [datetime]::Now
+            $Job.Status     = 'StagingWait'
+            $Job.StatusIcon = [char]0x23F0
+            $msg = if ($stageResult.AlreadyStarted) {
+                "Build already in progress. Waiting {0} min before reboot..."
+            } else {
+                "Staged. Waiting {0} min before reboot..."
             }
-        }
-        catch {
-            # Non-fatal - BuildId will be fetched on first monitoring tick
+            $Job.Message = ($msg -f $script:StagingWaitMinutes)
             Write-BMLog -MachineName $Job.MachineName `
-                        -Message ("Could not pre-fetch BuildId: {0}" -f $_.Exception.Message) -Level Debug
+                        -Message ("Staged (inline). Waiting {0} min." -f $script:StagingWaitMinutes) -Level Info
+            try {
+                $buildData = Get-BMBuildData -ComputerName $Job.MachineName -Credential $regCred
+                if ($null -ne $buildData -and $buildData.BuildId) { $Job.BuildId = $buildData.BuildId }
+            } catch { }
         }
     }
     catch {
@@ -531,7 +750,8 @@ function Invoke-BMStep_Stage {
         $Job.Message    = "Stage failed: $($_.Exception.Message)"
         $Job.Status     = 'Error'
         $Job.StatusIcon = [char]0x26A0
-        Write-BMLog -MachineName $Job.MachineName -Message ("Stage API failed: {0}" -f $_.Exception.Message) -Level Error
+        Write-BMLog -MachineName $Job.MachineName `
+                    -Message ("Stage API failed: {0}" -f $_.Exception.Message) -Level Error
         Invoke-BMHandleFailure -Job $Job
     }
 }
@@ -769,5 +989,6 @@ Export-ModuleMember -Function @(
     'Start-BMEngine',
     'Stop-BMEngine',
     'Test-BMEngineRunning',
-    'Invoke-BMEngineTick'
+    'Invoke-BMEngineTick',
+    'Request-BMQuickTick'
 )

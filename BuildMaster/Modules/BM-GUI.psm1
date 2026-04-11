@@ -595,6 +595,11 @@ function Start-BMGui {
         $logScroll.ScrollToBottom()
     }.GetNewClosure()
 
+    # -- Tell the engine where BM-API.psm1 lives (needed for background runspace)
+    # LogPath is <root>\Logs; modules are one level up in <root>\Modules.
+    $modulesRoot = Join-Path (Split-Path -Parent $LogPath) 'Modules'
+    Set-BMEngineConfig -ModulePath (Join-Path $modulesRoot 'BM-API.psm1')
+
     # -- Bind ObservableCollection to DataGrid ---------------------------------
     # Must use Get-BMJobCollection, NOT Get-BMJobs.
     # Get-BMJobs returns enumerated items (or $null for empty); Get-BMJobCollection
@@ -933,13 +938,10 @@ function Start-BMGui {
             Start-BMEngine
         }
 
-        # Trigger an immediate engine tick so jobs start processing at once
-        # (don't wait up to 30 s for the first DispatcherTimer interval)
-        try { Invoke-BMEngineTick } catch { }
-
-        # Refresh grid cells so updated property values appear straight away
-        # (PSCustomObject has no INotifyPropertyChanged; Items.Refresh() is needed)
-        try { $ctrl['JobGrid'].Items.Refresh() } catch { }
+        # Request a fast tick (500 ms) so staging begins shortly after the
+        # click handler returns and the UI has rendered the new rows.
+        # Staging runs in a background runspace so the UI thread stays free.
+        Request-BMQuickTick
 
         $ctrl['TxtMachines'].Clear()
 

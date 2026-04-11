@@ -157,7 +157,13 @@ function Invoke-BMRestCall {
         throw ('API Error [{0} {1}] HTTP {2} - {3}' -f $Method, $Uri, $statusCode, $errorBody).TrimEnd()
     }
     catch {
-        throw ('API Error [{0} {1}] - {2}' -f $Method, $Uri, $_.Exception.Message)
+        # PS 7: $_.ErrorDetails.Message contains the response body (populated by Invoke-RestMethod).
+        # Include it so callers (e.g. Invoke-BMStage) can pattern-match on API error messages.
+        $detail = if ($null -ne $_.ErrorDetails -and
+                      -not [string]::IsNullOrEmpty($_.ErrorDetails.Message)) {
+            ' | ' + $_.ErrorDetails.Message
+        } else { '' }
+        throw ('API Error [{0} {1}] - {2}{3}' -f $Method, $Uri, $_.Exception.Message, $detail)
     }
 }
 
@@ -248,6 +254,43 @@ function Get-BMBuildInstance {
     $uri = ('{0}/v1/machinebuild/instance/{1}' -f
             $script:BMBaseUrl, $BuildId)
     return Invoke-BMRestCall -Uri $uri -Method GET -Credential $Credential
+}
+
+# -----------------------------------------------------------------------------
+#  BUILDMASTER - BUILD STATUS (pre-check before staging)
+# -----------------------------------------------------------------------------
+
+function Get-BMBuildStatus {
+    <#
+    .SYNOPSIS
+        Returns the current build status string for a machine from BuildMaster.
+        Used as a pre-check before staging: if the machine is already 'Staged'
+        the staging API call can be skipped.
+    .OUTPUTS  [string] - Status string (e.g. 'Staged', 'Started', 'Completed')
+                         or $null if the machine has no active build / API error.
+    #>
+    [CmdletBinding()]
+    [OutputType([string])]
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [System.Management.Automation.PSCredential]$Credential
+    )
+    $uri = ('{0}/v1/machinebuild/buildstatus?computerName={1}' -f
+            $script:BMBaseUrl, (Get-BMHostname -ComputerName $ComputerName))
+    try {
+        $response = Invoke-BMRestCall -Uri $uri -Method GET -Credential $Credential
+        if ($null -eq $response) { return $null }
+        # Handle several plausible response shapes
+        if ($response -is [string])                              { return $response.Trim() }
+        if ($null -ne $response.Status)                         { return [string]$response.Status }
+        if ($null -ne $response.BuildStatus)                    { return [string]$response.BuildStatus }
+        if ($null -ne $response.buildStatus)                    { return [string]$response.buildStatus }
+        return $null
+    }
+    catch {
+        # No active build record or API unavailable - return $null so caller proceeds normally
+        return $null
+    }
 }
 
 # -----------------------------------------------------------------------------
@@ -447,6 +490,22 @@ function Invoke-VWReboot {
 }
 
 # -----------------------------------------------------------------------------
+#  CONFIG READER  (used by engine to pass URLs to background runspace)
+# -----------------------------------------------------------------------------
+
+function Get-BMAPIConfig {
+    <#
+    .SYNOPSIS  Returns the current API configuration as a PSCustomObject.
+               Used by the engine to pass base URLs to a background runspace.
+    #>
+    return [pscustomobject]@{
+        BMBaseUrl    = $script:BMBaseUrl
+        VWBaseUrl    = $script:VWBaseUrl
+        VWFqdnSuffix = $script:VWFqdnSuffix
+    }
+}
+
+# -----------------------------------------------------------------------------
 #  EXPORTS
 # -----------------------------------------------------------------------------
 Export-ModuleMember -Function @(
@@ -458,5 +517,7 @@ Export-ModuleMember -Function @(
     'Get-BMStageEntryTime',
     'Get-VWDesktopInfo',
     'Test-IsVirtualMachine',
-    'Invoke-VWReboot'
+    'Invoke-VWReboot',
+    'Get-BMBuildStatus',
+    'Get-BMAPIConfig'
 )
